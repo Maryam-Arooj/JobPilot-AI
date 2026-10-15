@@ -1,0 +1,331 @@
+@import "tailwindcss";
+
+/* Dark mode is always on: the whole product uses the JobPilot dark design system.
+   `dark:` variants resolve against the `.dark` class set on <html> in layout.tsx. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ==========================================================================
+   JOBPILOT DESIGN TOKENS
+   Single source of truth shared by every page, the app shell and the
+   Agent Transparency dashboard. No blue, no yellow.
+   ========================================================================== */
+:root {
+  /* Surfaces */
+  --jp-canvas: #0a0b0b;
+  --jp-panel: #060707;
+  --jp-surface: #121414;
+  --jp-surface-2: #1a1d1c;
+  --jp-inset: #0e1010;
+  --jp-line: #222625;
+  --jp-line-strong: #2f3533;
+
+  /* Text */
+  --jp-fg: #eceeed;
+  --jp-fg-2: #c2c8c5;
+  --jp-muted: #8a928e;
+  --jp-subtle: #737b77;
+  --jp-faint: #5a625e;
+
+  /* Brand + status */
+  --jp-accent: #ec4c78;
+  --jp-accent-hover: #f0668c;
+  --jp-ok: #4cc38a;
+  --jp-bad: #ff7a45;
+  --jp-pending: #a8a29e;
+
+  /* Agents */
+  --jp-agent-cv: #ec4c78;
+  --jp-agent-job: #d4d4d8;
+  --jp-agent-email: #f5a3b5;
+
+  --jp-radius: 8px;
+
+  /* Legacy names kept so older markup resolves to the dark system */
+  --background: var(--jp-canvas);
+  --surface: var(--jp-surface);
+  --surface-secondary: var(--jp-surface-2);
+  --border: var(--jp-line);
+  --border-light: var(--jp-line);
+  --foreground: var(--jp-fg);
+  --foreground-secondary: var(--jp-fg-2);
+  --foreground-muted: var(--jp-muted);
+  --strong-dark: var(--jp-panel);
+  --pilot-navy: var(--jp-fg);
+  --pilot-dark-blue: var(--jp-surface-2);
+  --pilot-blue: var(--jp-accent);
+  --pilot-sky: var(--jp-accent);
+  --pilot-cyan: var(--jp-accent);
+  --pilot-light-sky: rgb(236 76 120 / 0.12);
+  --pilot-indigo: var(--jp-accent);
+  --pilot-indigo-light: rgb(236 76 120 / 0.12);
+  --badge-success-bg: rgb(76 195 138 / 0.12);
+  --badge-success-text: var(--jp-ok);
+  --badge-success-border: rgb(76 195 138 / 0.3);
+  --badge-warning-bg: rgb(168 162 158 / 0.12);
+  --badge-warning-text: var(--jp-pending);
+  --badge-warning-border: rgb(168 162 158 / 0.3);
+  --badge-error-bg: rgb(255 122 69 / 0.12);
+  --badge-error-text: var(--jp-bad);
+  --badge-error-border: rgb(255 122 69 / 0.32);
+  --accent: var(--jp-accent);
+
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-canvas: var(--jp-canvas);
+  --color-panel: var(--jp-panel);
+  --color-surface: var(--jp-surface);
+  --color-surface-2: var(--jp-surface-2);
+  --color-inset: var(--jp-inset);
+  --color-line: var(--jp-line);
+  --color-line-strong: var(--jp-line-strong);
+  --color-fg: var(--jp-fg);
+  --color-fg-2: var(--jp-fg-2);
+  --color-muted: var(--jp-muted);
+  --color-subtle: var(--jp-subtle);
+  --color-faint: var(--jp-faint);
+  --color-accent: var(--jp-accent);
+  --color-accent-hover: var(--jp-accent-hover);
+  --color-accent-soft: rgb(236 76 120 / 0.12);
+  --color-ok: var(--jp-ok);
+  --color-ok-soft: rgb(76 195 138 / 0.12);
+  --color-bad: var(--jp-bad);
+  --color-bad-soft: rgb(255 122 69 / 0.12);
+  --color-pending: var(--jp-pending);
+  --color-pending-soft: rgb(168 162 158 / 0.12);
+  --color-agent-cv: var(--jp-agent-cv);
+  --color-agent-job: var(--jp-agent-job);
+  --color-agent-email: var(--jp-agent-email);
+
+  /* Legacy utility names */
+  --color-background: var(--background);
+  --color-surface-secondary: var(--surface-secondary);
+  --color-border: var(--border);
+  --color-border-light: var(--border-light);
+  --color-foreground: var(--foreground);
+  --color-foreground-secondary: var(--foreground-secondary);
+  --color-foreground-muted: var(--foreground-muted);
+  --color-strong-dark: var(--strong-dark);
+  --color-pilot-navy: var(--pilot-navy);
+  --color-pilot-blue: var(--pilot-blue);
+  --color-pilot-sky: var(--pilot-sky);
+  --color-pilot-cyan: var(--pilot-cyan);
+  --color-pilot-indigo: var(--pilot-indigo);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+body {
+  background-color: var(--jp-canvas);
+  color: var(--jp-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--jp-line-strong);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3d4441;
+  background-clip: padding-box;
+}
+
+::selection {
+  background: rgb(236 76 120 / 0.35);
+  color: #ffffff;
+}
+
+:focus-visible {
+  outline: 2px solid var(--jp-accent);
+  outline-offset: 2px;
+}
+
+/* Native form controls inherit the dark scheme */
+input,
+select,
+textarea {
+  color-scheme: dark;
+}
+select option {
+  background: var(--jp-surface);
+  color: var(--jp-fg);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--jp-faint);
+}
+
+/* ==========================================================================
+   SHARED COMPONENT CLASSES
+   ========================================================================== */
+.focus-ring {
+  @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-canvas;
+}
+
+.card-base {
+  background-color: var(--jp-surface);
+  border: 1px solid var(--jp-line);
+  border-radius: var(--jp-radius);
+}
+
+.card-hover {
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+.card-hover:hover {
+  border-color: var(--jp-line-strong);
+}
+
+.badge-success {
+  background-color: var(--badge-success-bg);
+  color: var(--badge-success-text);
+  border: 1px solid var(--badge-success-border);
+}
+.badge-warning {
+  background-color: var(--badge-warning-bg);
+  color: var(--badge-warning-text);
+  border: 1px solid var(--badge-warning-border);
+}
+.badge-error {
+  background-color: var(--badge-error-bg);
+  color: var(--badge-error-text);
+  border: 1px solid var(--badge-error-border);
+}
+.badge-neutral {
+  background-color: var(--jp-surface-2);
+  color: var(--jp-muted);
+  border: 1px solid var(--jp-line-strong);
+}
+
+/* Shimmer loading */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, var(--jp-surface) 25%, var(--jp-surface-2) 50%, var(--jp-surface) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-shimmer,
+  .animate-pulse,
+  .animate-spin {
+    animation: none;
+  }
+}
+
+/* ==========================================================================
+   CV PAPER ISOLATION
+   CV templates are documents, not app chrome: they always render on white
+   paper with their own colours so preview, print and PDF export stay intact.
+   ========================================================================== */
+/* No background here: each template card paints its own white, rounded,
+   bordered page (as in the original design). Painting the wrapper white
+   would square the page's corners against the dark frame. */
+.cv-paper {
+  color: #0F172A;
+  color-scheme: light;
+}
+
+/* Original body letter-spacing, now scoped to the CV document only. */
+#printable-cv {
+  letter-spacing: -0.011em;
+}
+
+/* Soft drop shadow so the white page reads as a document on the dark frame.
+   Screen only: print and PDF export get the plain page. */
+@media screen {
+  .cv-paper > * {
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.35), 0 16px 40px -12px rgb(0 0 0 / 0.65);
+  }
+}
+
+/* ==========================================================================
+   CV EXCLUSIVE PRINT MEDIA STYLES
+   Clean print styles that hide web application layout chrome and render
+   ONLY the chosen CV template with full fidelity, fonts, and colors.
+   ========================================================================== */
+@page {
+  size: A4 portrait;
+  margin: 0 !important;
+}
+
+@media print {
+  html, body {
+    background: #FFFFFF !important;
+    color: #181816 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Isolate strictly the printable CV document and hide everything else on the page */
+  body * {
+    visibility: hidden !important;
+  }
+
+  #printable-cv,
+  #printable-cv * {
+    visibility: visible !important;
+  }
+
+  /* Completely remove any web app navigation, sidebars, buttons, or modals */
+  .print\:hidden,
+  header,
+  aside,
+  nav,
+  button,
+  input,
+  textarea {
+    display: none !important;
+  }
+
+  /* Force the printable CV to take the full A4 canvas */
+  #printable-cv {
+    display: block !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-height: 297mm !important;
+    margin: 0 !important;
+    padding: 10mm 12mm !important;
+    background: #FFFFFF !important;
+    border: none !important;
+    box-shadow: none !important;
+    box-sizing: border-box !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  /* Avoid page breaks inside experience and education blocks */
+  .page-break-avoid {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+}

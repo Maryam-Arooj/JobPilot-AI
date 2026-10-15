@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+.venv/
+backend/.venv/
+env/
+venv/
+
+# Environment Variables & Secrets
+.env
+.env*.local
+*.env
+backend/.env
+frontend/.env.local
+backend/.env.*
+!backend/.env.example
+frontend/.env.*
+
+# Python Cache & Builds
+__pycache__/
+*/__pycache__/
+*/*/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Next.js Build Outputs
+.next/
+frontend/.next/
+out/
+frontend/out/
+
+# Databases & Scratch Files
+*.db
+*.sqlite
+*.sqlite3
+test.db
+scratch_models.json
+*.log
+
+# OS Metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Explicitly ensure images and assets are tracked
+!Images/
+!Images/*.png
+!logo.png
