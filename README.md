@@ -4,7 +4,7 @@
 
 **Maintained by [Maryam Arooj](https://github.com/Maryam-Arooj)** · Originally created by Eman Yahya · See [License & Credits](#license--credits)
 
-![Overview Dashboard](Images/Overview%20Dashboard.png)
+![Overview dashboard](docs/screenshots/overview.png)
 
 ---
 
@@ -33,12 +33,18 @@ Active development. Current focus is making the CV, Job and Email agents fully c
 
 ## Screenshots
 
+Captured from the running app with a fictional demo user (Jordan Avery).
+
 | | |
 |---|---|
-| ![Resume Studio](Images/Resume%20Studio.png) | ![Job dashboard](Images/Job%20Dashboard%20according%20to%20Cv.png) |
-| Resume Studio | Jobs matched to your CV |
-| ![Extracted info](Images/Extracted%20Info.png) | ![Recommendations](Images/Recommendations%20of%20jobs%20and%20gaps.png) |
-| CV extraction | Matches and skill gaps |
+| ![Overview](docs/screenshots/overview.png) | ![Career profile](docs/screenshots/profile.png) |
+| Overview with the agent workflow | Career profile |
+| ![Resume Studio](docs/screenshots/resume-studio.png) | ![Tailor Resume](docs/screenshots/tailor-resume.png) |
+| Resume Studio editor with live CV preview | Tailor Resume: proposed changes to review, plus skill gaps |
+| ![Agent Transparency](docs/screenshots/agent-transparency.png) | <img src="docs/screenshots/overview-mobile.png" alt="Overview on mobile" width="260"> |
+| Agent Transparency | Overview on mobile |
+
+Job search, job detail and application screenshots will be added once the Job Agent fixes above are done.
 
 ## Tech stack
 
