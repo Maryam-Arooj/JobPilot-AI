@@ -29,7 +29,7 @@ Everything else (career counsellor chat, job alerts, career memory, n8n, Docker)
 2. **Never print, log, store or commit API keys, tokens or `.env` values.** `.env` files are git-ignored and must stay that way.
 3. **Do not replace the API keys in `backend/.env`** — they are the owner's originals. Only the login secrets `SECRET_KEY` / `NEXTAUTH_SECRET` may be regenerated.
 4. **Do not modify or delete `LICENSE`.** README shows only the maintainer (Maryam Arooj).
-5. **Git:** commit as `Maryam Arooj <213998426+Maryam-Arooj@users.noreply.github.com>`. Push only to `origin` (Maryam's repo). Remote `eman` is fetch-only with push disabled — never push there. No force-push.
+5. **Git:** commit as `Maryam Arooj <213998426+Maryam-Arooj@users.noreply.github.com>`. Push only to `origin` (Maryam's repo). Remote `upstream-original` (the original codebase) is fetch-only with push disabled — never push there. No force-push.
 6. Don't claim a test passed unless it was actually run and the output seen.
 7. Keep the UI dark theme (black + raspberry `#ec4c78`, green success, orange-red failure, stone pending; no blue/yellow). Only the CV page itself is white.
 8. Work one task at a time; after finishing, update this file, say "Task N done" and ask the owner before starting the next.
