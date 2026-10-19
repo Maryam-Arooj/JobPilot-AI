@@ -6,7 +6,7 @@
 - **Maintainer:** Maryam Arooj
 - **Local path (Windows):** `C:\Users\vc\Downloads\jobpilot_AI\jobpilot_AI`
 - **Deadline:** project submission ~22 Oct 2026 (3-day sprint: 19–21 Oct)
-- **Last updated:** 19 Oct 2026
+- **Last updated:** 19 Oct 2026 (Task 1 code complete)
 
 ---
 
@@ -82,19 +82,19 @@ backend\.venv\Scripts\python -m pytest backend\tests -q
 
 | Area | % | Done | Remaining / known bugs |
 |---|---|---|---|
-| Foundation | 85 | DB `jobpilot_v2`, auth, typed NVIDIA client, fast model config, provider check, security pass (auth/ownership, no secrets in errors), repo set up | `SECRET_KEY` and `NEXTAUTH_SECRET` are placeholders; hardcoded NextAuth fallback secret in `frontend/src/app/api/auth/[...nextauth]/route.ts` |
+| Foundation | 90 | DB `jobpilot_v2`, auth, typed NVIDIA client, fast model config, provider check, security pass (auth/ownership, no secrets in errors), repo set up | Login secrets regenerated 19 Oct (users must log in again once); NextAuth fallback secret removed |
 | CV Agent | 60 | Upload/parse, Resume Studio, 4 templates, PDF/DOCX export, grounded Tailor Resume (200 in 7–18 s) | Extraction truncated (2000-token cap) → regex fallback **invents** degree/year/experience and saves as **verified**; Edit Profile erases fields not shown (phone); "Save Version" ignores edits; "Sync from Profile" duplicates skills |
 | Job Agent | 35 | SerpAPI wired, jobs saved per user, dedupe | SerpAPI returned 0 jobs on 16 Oct (investigate params/location); Apify sends `queries` (wrong) and its error item was saved as a job with 75% match; Firecrawl enrichment is a no-op; matching is keyword-only with invented defaults (score floor 40, 70/75 defaults, "Mid-Senior", "Technology", "BS Computer Science", education always matched) |
 | Email Agent | 25 | Gmail draft creation code (real, no fake success), SMTP honest 503 | Emails are fixed templates (no AI) with unsupported claims; company research is **fabricated** (`providers/company_providers.py`) and marked "verified"; company website guessed as `www.<name>.com`; Gmail scope lacks email → address never captured; OAuth `state` = user id; never tested live |
-| Live dashboard | 45 | Frontend page complete, honest "Not connected" state | Backend run tracking + `/agent-runs/snapshot` missing; agents not instrumented |
-| Overview | 80 | Real data from profile/jobs/resumes/applications/recommendations | No live agent activity card |
+| Live dashboard | 85 | Frontend page; backend run tracking (`AgentRun` model, `services/agent_runs.py`), `GET /agent-runs/snapshot` + `/agent-runs/{id}`; CV/Job/Email endpoints, NVIDIA client, parsers, SerpAPI/Apify/Firecrawl/Gmail calls instrumented; Overview card; 3 s polling while running | Live verification on Windows; Task 5 pipeline view |
+| Overview | 90 | Real data from profile/jobs/resumes/applications/recommendations; Live agent activity card (`components/LiveAgentActivity.tsx`) | — |
 | Docs/Repo | 70 | README, 6 new UI screenshots in `docs/screenshots/` | README still has an original-author credit line (line 5) and a "License & Credits" section — owner wants maintainer-only README (keep LICENSE); jobs/applications screenshots missing |
 
 ## 6. Task board (3-day sprint)
 
 | # | Task | Day | Status |
 |---|---|---|---|
-| 1 | **Live dashboard backend:** `AgentRun` model, `track_run` service (own DB session, sanitised, stale-run timeout), `GET /agent-runs/snapshot` + `GET /agent-runs/{id}` matching `types.ts`, instrument CV/Job/Email endpoints, Overview "Live agent activity" card, regenerate login secrets + remove NextAuth fallback. Verify: 1 CV extract + 1 job search shown live. | Mon 19 | ⏳ Not started |
+| 1 | **Live dashboard backend** (code + 15 tests done; awaiting live check `backend/scripts/verify_task1.py`): `AgentRun` model, `track_run` service (own DB session, sanitised, stale-run timeout), `GET /agent-runs/snapshot` + `GET /agent-runs/{id}` matching `types.ts`, instrument CV/Job/Email endpoints, Overview "Live agent activity" card, regenerate login secrets + remove NextAuth fallback. Verify: 1 CV extract + 1 job search shown live. | Mon 19 | 🔄 Code done, live check pending |
 | 2 | **CV Agent:** LLM returns `profile_data` only (facts built in code), 4000 tokens, truncation detection, grounding check (drop values not in source), no example values in prompt, literal-only fallback with `extraction_method`, facts unverified until confirmed, threadpool upload; fix Edit Profile erasure, Save Version, duplicate skills. Verify: grounding table 100%. | Mon 19 | ⏳ Not started |
 | 3 | **Job Agent:** debug SerpAPI 0 results, Apify `keywords/location/limitPerSource`, never save error items, parallel providers with timeouts, fix/drop Firecrawl enrichment, LLM job analysis, evidence-based scores, no invented defaults. Verify: 2–3 live searches. | Tue 20 | ⏳ Not started |
 | 4 | **Email Agent:** company research = SerpAPI → official site → Firecrawl → LLM summary with sources (empty if nothing); LLM email + claim validator; Gmail `email` scope + signed OAuth state; live draft test. | Tue 20 | ⏳ Not started |
@@ -105,6 +105,8 @@ Status legend: ⏳ not started · 🔄 in progress · ✅ done · ⚠️ blocked
 
 ## 7. Progress log (newest first)
 
+- **19 Oct 2026 — Task 1 code complete.** Added `backend/models/agent_runs.py` (AgentRun), `backend/services/agent_runs.py` (`track_run`, `tool_call`, `run_log`, `run_warn`, `run_step`; own DB session per write, secret redaction, truncation, 10-min stale timeout), `backend/api/agent_runs.py` (`GET /agent-runs/snapshot?range=1h|24h|7d`, `GET /agent-runs/{id}`, owner-only). Instrumented: `/profiles/me/extract`, `/profiles/me/extract/upload`, `/resumes/{id}/generate`, `/resumes/tailor`, `/jobs/search`, `/jobs/{id}/match`, `/applications/prepare`, `/applications/{id}/generate-email`, `/applications/{id}/gmail-draft`; NVIDIA client (per-model tool calls + fallback warning), document parser, SerpAPI, Apify, Firecrawl (job + company), Gmail drafts/token refresh. Company research placeholder text is now flagged as a warning on the dashboard. Frontend: Overview "Live agent activity" card, dashboard polls every 3 s while a run is active. Regenerated `SECRET_KEY`/`NEXTAUTH_SECRET` (API keys untouched) and removed the hardcoded NextAuth fallback. Tests: 71 passed, 2 expected environmental failures (no job keys in the test copy); frontend `tsc --noEmit` clean. Live check script: `backend/scripts/verify_task1.py`.
+- **Test setup for AI assistants:** tests run in an isolated copy on SQLite (`DATABASE_URL=sqlite:///...`, no `.env`). Baseline before Task 1: 56 passed + the same 2 environmental failures. SQLite may log "database is locked" for tracking writes during request transactions; this does not happen on PostgreSQL.
 - **19 Oct 2026** — Sprint planned (tasks 1–6). Created this file. Overall ≈ 55%.
 - **16 Oct 2026** — New README + 6 dark-UI screenshots pushed (`9b18a9d`). Old `Images/` removed. Repo made private. Found bugs: Apify error saved as job, SerpAPI 0 results, Edit Profile erases phone, Save Version ignores edits, duplicate skills.
 - **15 Oct 2026** — Repo created under Maryam-Arooj; clean snapshot pushed (`bd5666f`, no history, no keys). Phase 1: new DB `jobpilot_v2`, typed NVIDIA client, fast model (`gpt-oss-20b`, low reasoning), provider check (all keys valid), 56 tests passing (2 environmental failures). Earlier: backend security pass, dark UI redesign, Resume Studio fixes, grounded Tailor Resume.

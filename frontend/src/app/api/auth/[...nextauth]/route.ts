@@ -23,7 +23,8 @@ export const authOptions = {
     }),
   ],
   session: { strategy: "jwt" as const },
-  secret: process.env.NEXTAUTH_SECRET || "yourcareer-buddy-secret-key-2026-production",
+  // No hardcoded fallback: NEXTAUTH_SECRET must be set in frontend/.env.
+  secret: process.env.NEXTAUTH_SECRET,
 };
 
 const handler = NextAuth(authOptions);

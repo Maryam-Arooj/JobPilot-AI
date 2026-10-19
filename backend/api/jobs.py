@@ -11,6 +11,7 @@ from ..ai_agents.job_discovery import JobDiscoveryAgent
 from ..ai_agents.job_analysis import JobAnalysisAgent
 from ..ai_agents.job_match import JobMatchAgent
 from ..services.job_normalizer import normalize_job, deduplicate_jobs
+from ..services.agent_runs import track_run
 
 logger = logging.getLogger(__name__)
 
@@ -54,109 +55,118 @@ def search_jobs(
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
 ):
-    profile = db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first()
-    profile_data = {
-        "professional": profile.professional or {} if profile else {},
-        "skills": profile.skills or {} if profile else {},
-        "experience": profile.experience or [] if profile else [],
-        "education": profile.education or [] if profile else []
-    }
+    with track_run(user_id, "job", f"Search jobs: {query}" + (f" ({country})" if country and country.upper() != "ALL" else ""), input_summary={"query": query, "country": country}) as run:
+        profile = db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first()
+        profile_data = {
+            "professional": profile.professional or {} if profile else {},
+            "skills": profile.skills or {} if profile else {},
+            "experience": profile.experience or [] if profile else [],
+            "education": profile.education or [] if profile else []
+        }
     
-    agent = JobDiscoveryAgent()
-    discovery_query = f"{query} in {country}" if country and country.upper() != "ALL" else query
-    try:
-        discovery_res = agent.discover(discovery_query, profile_data)
-    except HTTPException as e:
-        # Provider errors can embed request URLs/tokens; keep them in server logs only.
-        logger.error("Job discovery failed: %s", e.detail)
-        raise HTTPException(
-            status_code=e.status_code,
-            detail="No jobs returned from live job providers. Check server logs for provider status."
-        )
-    intent = discovery_res.get("intent", {})
-    deduped_jobs = discovery_res.get("results", [])
-    
-    search_record = JobSearch(
-        user_id=user_id,
-        natural_language_query=query,
-        structured_intent=intent,
-        results_count=len(deduped_jobs)
-    )
-    db.add(search_record)
-    db.commit()
-
-    saved_jobs = []
-    for j_data in deduped_jobs:
-        c_url = j_data.get("canonical_application_url") or j_data.get("application_url")
-        existing_job = None
-        if c_url:
-            existing_job = db.query(Job).filter(Job.application_url == c_url).first()
-            
-        if existing_job:
-            job_obj = existing_job
-        else:
-            inferred_c = infer_country(j_data.get("location", ""), j_data.get("country", ""))
-            job_obj = Job(
-                title=j_data.get("title") or "Untitled Position",
-                company=j_data.get("company") or "Unknown Company",
-                location=j_data.get("location") or "Remote / Flexible",
-                remote=bool(j_data.get("remote")),
-                employment_type=j_data.get("employment_type", "Full-time"),
-                salary=j_data.get("salary"),
-                description=j_data.get("description", ""),
-                requirements=j_data.get("requirements", []),
-                preferred_skills=j_data.get("preferred_skills", []),
-                responsibilities=j_data.get("responsibilities", []),
-                application_url=c_url or j_data.get("application_url", ""),
-                source=j_data.get("source", "apify/serp"),
-                source_url=j_data.get("source_url", ""),
-                extraction_method=j_data.get("extraction_method", "provider"),
-                technologies=j_data.get("technologies", []),
-                seniority=j_data.get("seniority", "Mid-Senior"),
-                experience_years=j_data.get("experience_years"),
-                industry=j_data.get("industry", "Technology"),
-                job_type=j_data.get("job_type", "Full-time"),
-                country=inferred_c,
-                city=j_data.get("city", ""),
-                normalized_title=j_data.get("normalized_title", ""),
-                normalized_company=j_data.get("normalized_company", "")
+        run.step("Search live job providers", 1, 3)
+        agent = JobDiscoveryAgent()
+        discovery_query = f"{query} in {country}" if country and country.upper() != "ALL" else query
+        try:
+            discovery_res = agent.discover(discovery_query, profile_data)
+        except HTTPException as e:
+            # Provider errors can embed request URLs/tokens; keep them in server logs only.
+            logger.error("Job discovery failed: %s", e.detail)
+            raise HTTPException(
+                status_code=e.status_code,
+                detail="No jobs returned from live job providers. Check server logs for provider status."
             )
-            db.add(job_obj)
-            db.flush()
+        intent = discovery_res.get("intent", {})
+        deduped_jobs = discovery_res.get("results", [])
+    
+        run.step("Save jobs", 3, 3)
+        search_record = JobSearch(
+            user_id=user_id,
+            natural_language_query=query,
+            structured_intent=intent,
+            results_count=len(deduped_jobs)
+        )
+        db.add(search_record)
+        db.commit()
+
+        saved_jobs = []
+        for j_data in deduped_jobs:
+            c_url = j_data.get("canonical_application_url") or j_data.get("application_url")
+            existing_job = None
+            if c_url:
+                existing_job = db.query(Job).filter(Job.application_url == c_url).first()
             
-            for src in j_data.get("sources", []):
-                db.add(JobSource(
-                    job_id=job_obj.id,
-                    provider=src.get("provider", "search"),
-                    source_url=src.get("source_url", ""),
-                    raw_data=src.get("raw_data", {})
-                ))
-            db.commit()
+            if existing_job:
+                job_obj = existing_job
+            else:
+                inferred_c = infer_country(j_data.get("location", ""), j_data.get("country", ""))
+                job_obj = Job(
+                    title=j_data.get("title") or "Untitled Position",
+                    company=j_data.get("company") or "Unknown Company",
+                    location=j_data.get("location") or "Remote / Flexible",
+                    remote=bool(j_data.get("remote")),
+                    employment_type=j_data.get("employment_type", "Full-time"),
+                    salary=j_data.get("salary"),
+                    description=j_data.get("description", ""),
+                    requirements=j_data.get("requirements", []),
+                    preferred_skills=j_data.get("preferred_skills", []),
+                    responsibilities=j_data.get("responsibilities", []),
+                    application_url=c_url or j_data.get("application_url", ""),
+                    source=j_data.get("source", "apify/serp"),
+                    source_url=j_data.get("source_url", ""),
+                    extraction_method=j_data.get("extraction_method", "provider"),
+                    technologies=j_data.get("technologies", []),
+                    seniority=j_data.get("seniority", "Mid-Senior"),
+                    experience_years=j_data.get("experience_years"),
+                    industry=j_data.get("industry", "Technology"),
+                    job_type=j_data.get("job_type", "Full-time"),
+                    country=inferred_c,
+                    city=j_data.get("city", ""),
+                    normalized_title=j_data.get("normalized_title", ""),
+                    normalized_company=j_data.get("normalized_company", "")
+                )
+                db.add(job_obj)
+                db.flush()
+            
+                for src in j_data.get("sources", []):
+                    db.add(JobSource(
+                        job_id=job_obj.id,
+                        provider=src.get("provider", "search"),
+                        source_url=src.get("source_url", ""),
+                        raw_data=src.get("raw_data", {})
+                    ))
+                db.commit()
 
-        saved_jobs.append({
-            "id": job_obj.id,
-            "title": job_obj.title,
-            "company": job_obj.company,
-            "location": job_obj.location,
-            "country": infer_country(job_obj.location, job_obj.country),
-            "remote": job_obj.remote,
-            "employment_type": job_obj.employment_type,
-            "salary": job_obj.salary,
-            "description": job_obj.description,
-            "requirements": job_obj.requirements,
-            "preferred_skills": job_obj.preferred_skills,
-            "responsibilities": job_obj.responsibilities,
-            "application_url": job_obj.application_url,
-            "technologies": job_obj.technologies,
-            "seniority": job_obj.seniority,
-            "industry": job_obj.industry,
-            "source": job_obj.source
-        })
+            saved_jobs.append({
+                "id": job_obj.id,
+                "title": job_obj.title,
+                "company": job_obj.company,
+                "location": job_obj.location,
+                "country": infer_country(job_obj.location, job_obj.country),
+                "remote": job_obj.remote,
+                "employment_type": job_obj.employment_type,
+                "salary": job_obj.salary,
+                "description": job_obj.description,
+                "requirements": job_obj.requirements,
+                "preferred_skills": job_obj.preferred_skills,
+                "responsibilities": job_obj.responsibilities,
+                "application_url": job_obj.application_url,
+                "technologies": job_obj.technologies,
+                "seniority": job_obj.seniority,
+                "industry": job_obj.industry,
+                "source": job_obj.source
+            })
 
-    search_record.provider_status = {"job_ids": [j["id"] for j in saved_jobs]}
-    db.commit()
+        search_record.provider_status = {"job_ids": [j["id"] for j in saved_jobs]}
+        db.commit()
+        if discovery_res.get("provider_errors"):
+            run.warn(f"{len(discovery_res['provider_errors'])} provider(s) failed; results come from the others")
+        if not saved_jobs:
+            run.warn("The live providers returned no jobs for this search")
+        run.set_output({"jobs_found": len(deduped_jobs), "jobs_saved": len(saved_jobs),
+                        "provider_errors": discovery_res.get("provider_errors", [])})
 
-    return {"intent": intent, "results": saved_jobs}
+        return {"intent": intent, "results": saved_jobs}
 
 @router.get("/recommendations")
 def get_job_recommendations(
@@ -394,66 +404,71 @@ def analyze_job(job_id: int, user_id: int = Depends(get_current_user_id), db: Se
 
 @router.post("/{job_id}/match")
 def match_job(job_id: int, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    with track_run(user_id, "job", f"Match profile to job #{job_id}", input_summary={"job_id": job_id}) as run:
+        job = db.query(Job).filter(Job.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
         
-    profile = db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first()
-    profile_dict = {
-        "skills": profile.skills or {} if profile else {},
-        "experience": profile.experience or [] if profile else [],
-        "education": profile.education or [] if profile else [],
-        "professional": profile.professional or {} if profile else {}
-    }
+        profile = db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first()
+        profile_dict = {
+            "skills": profile.skills or {} if profile else {},
+            "experience": profile.experience or [] if profile else [],
+            "education": profile.education or [] if profile else [],
+            "professional": profile.professional or {} if profile else {}
+        }
     
-    analysis_agent = JobAnalysisAgent()
-    analysis = analysis_agent.analyze({
-        "title": job.title,
-        "company": job.company,
-        "description": job.description,
-        "requirements": job.requirements,
-        "preferred_skills": job.preferred_skills,
-        "responsibilities": job.responsibilities,
-        "technologies": job.technologies,
-        "experience_years": job.experience_years
-    })
+        run.step("Analyse job requirements", 1, 3)
+        analysis_agent = JobAnalysisAgent()
+        analysis = analysis_agent.analyze({
+            "title": job.title,
+            "company": job.company,
+            "description": job.description,
+            "requirements": job.requirements,
+            "preferred_skills": job.preferred_skills,
+            "responsibilities": job.responsibilities,
+            "technologies": job.technologies,
+            "experience_years": job.experience_years
+        })
     
-    match_agent = JobMatchAgent()
-    match_res = match_agent.match(profile_dict, {
-        "id": job.id,
-        "title": job.title,
-        "company": job.company,
-        "location": job.location,
-        "remote": job.remote
-    }, analysis)
+        run.step("Match against profile", 2, 3)
+        match_agent = JobMatchAgent()
+        match_res = match_agent.match(profile_dict, {
+            "id": job.id,
+            "title": job.title,
+            "company": job.company,
+            "location": job.location,
+            "remote": job.remote
+        }, analysis)
     
-    # Persist JobMatch & JobMatchEvidence
-    match_record = JobMatch(
-        user_id=user_id,
-        job_id=job_id,
-        overall_alignment=match_res["overall_alignment"],
-        skills_match=match_res.get("skills_match", {}),
-        experience_match=match_res.get("experience_match", {}),
-        education_match=match_res.get("education_match", {}),
-        location_match=match_res.get("location_match", {}),
-        responsibility_match=match_res.get("responsibility_match", {}),
-        matched_requirements=match_res.get("matched_requirements", []),
-        gaps=match_res.get("gaps", [])
-    )
-    db.add(match_record)
-    db.flush()
+        run.step("Save match evidence", 3, 3)
+        # Persist JobMatch & JobMatchEvidence
+        match_record = JobMatch(
+            user_id=user_id,
+            job_id=job_id,
+            overall_alignment=match_res["overall_alignment"],
+            skills_match=match_res.get("skills_match", {}),
+            experience_match=match_res.get("experience_match", {}),
+            education_match=match_res.get("education_match", {}),
+            location_match=match_res.get("location_match", {}),
+            responsibility_match=match_res.get("responsibility_match", {}),
+            matched_requirements=match_res.get("matched_requirements", []),
+            gaps=match_res.get("gaps", [])
+        )
+        db.add(match_record)
+        db.flush()
     
-    for ev in match_res.get("evidence", []):
-        db.add(JobMatchEvidence(
-            match_id=match_record.id,
-            evidence_type=ev.get("type", "match"),
-            career_profile_fact_path=ev.get("career_profile_fact_path", "profile"),
-            job_requirement_text=ev.get("job_requirement_text", ""),
-            explanation=ev.get("explanation", "")
-        ))
-    db.commit()
-    
-    return match_res
+        for ev in match_res.get("evidence", []):
+            db.add(JobMatchEvidence(
+                match_id=match_record.id,
+                evidence_type=ev.get("type", "match"),
+                career_profile_fact_path=ev.get("career_profile_fact_path", "profile"),
+                job_requirement_text=ev.get("job_requirement_text", ""),
+                explanation=ev.get("explanation", "")
+            ))
+        db.commit()
+        run.set_output({"job": f"{job.title} at {job.company}", "alignment": match_res.get("overall_alignment"),
+                        "matched": len(match_res.get("matched_requirements", [])), "gaps": len(match_res.get("gaps", []))})
+        return match_res
 
 @router.get("/{job_id}/sources")
 def get_job_sources(job_id: int, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):

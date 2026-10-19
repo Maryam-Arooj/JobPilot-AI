@@ -1,6 +1,7 @@
 // Data contract for the Agent Transparency dashboard.
-// The backend endpoint GET /agent-runs/snapshot is expected to return `AgentSnapshot`.
-// Until that endpoint exists, the page shows an honest "not connected" state (no sample data).
+// Served by the backend: GET /agent-runs/snapshot?range=1h|24h|7d -> AgentSnapshot
+// (backend/api/agent_runs.py, recorded by backend/services/agent_runs.py).
+// If the backend is unreachable the page shows an honest "not connected" state (no sample data).
 
 export type AgentKey = "cv" | "job" | "email";
 

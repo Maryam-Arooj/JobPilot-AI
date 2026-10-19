@@ -5,6 +5,7 @@ import logging
 from typing import Dict, List, Any, Optional
 from .schemas import ProfileExtractionResult, ExtractedFact
 from ..services.nvidia_llm import call_nvidia_llm
+from ..services.agent_runs import run_warn
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +379,7 @@ class ProfileAgent:
 
         except Exception as e:
             logger.warning(f"NVIDIA LLM extraction fallback triggered: {e}")
+            run_warn(f"AI extraction failed ({type(e).__name__}: {e}); used the pattern-matching fallback. Review the extracted facts.")
             fb = self._deterministic_fallback(text)
             return {
                 "facts": [f.dict() for f in fb["result"].facts],

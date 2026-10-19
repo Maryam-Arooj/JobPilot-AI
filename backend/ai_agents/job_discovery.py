@@ -1,5 +1,6 @@
 from typing import Dict, Any, List
 from ..services.job_normalizer import normalize_job, deduplicate_jobs
+from ..services.agent_runs import run_log, run_step, tool_call
 
 class JobDiscoveryAgent:
     def __init__(self):
@@ -38,7 +39,13 @@ class JobDiscoveryAgent:
         if not url or "example.com" in url:
             return job
         try:
-            extracted = self.extractor.extract(url)
+            with tool_call("firecrawl:scrape", "job page") as tc:
+                extracted = self.extractor.extract(url)
+                method = extracted.get("extraction_method")
+                tc["summary"] = f"method={method}"
+                if method != "firecrawl":
+                    tc["status"] = "failed"
+                    tc["summary"] = f"Firecrawl unavailable, fallback used: {extracted.get('extraction_error') or 'no API key'}"
             for k in ["title", "company", "description", "requirements", "location", "remote"]:
                 if extracted.get(k):
                     job[k] = extracted[k]
@@ -56,7 +63,9 @@ class JobDiscoveryAgent:
         for q in intent["search_queries"]:
             # Try SERP — real API call
             try:
-                serp_results = self.serp.search(q, intent["filters"])
+                with tool_call("serpapi:google_jobs", f"query={q!r}") as tc:
+                    serp_results = self.serp.search(q, intent["filters"])
+                    tc["summary"] = f"query={q!r} -> {len(serp_results or [])} jobs"
                 if serp_results and isinstance(serp_results, list):
                     all_jobs.extend(serp_results)
             except Exception as e:
@@ -64,7 +73,9 @@ class JobDiscoveryAgent:
 
             # Try Apify — real API call
             try:
-                apify_results = self.apify.search(q, intent["filters"])
+                with tool_call("apify:linkedin_jobs", f"query={q!r}") as tc:
+                    apify_results = self.apify.search(q, intent["filters"])
+                    tc["summary"] = f"query={q!r} -> {len(apify_results or [])} items"
                 if apify_results and isinstance(apify_results, list):
                     all_jobs.extend(apify_results)
             except Exception as e:
@@ -78,6 +89,9 @@ class JobDiscoveryAgent:
                 detail=f"No jobs returned from live providers. Errors: {'; '.join(provider_errors)}"
             )
 
+        for err in provider_errors:
+            run_log("warn", err)
+        run_step("Enrich and normalise jobs", 2, 3)
         # If providers returned nothing but no errors (empty results), return empty — no mock
         enriched = [self._enrich(j) for j in all_jobs]
         normalized = [normalize_job(j, j.get("source", "serp")) for j in enriched]

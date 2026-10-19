@@ -149,11 +149,13 @@ function useAgentSnapshot(range: string) {
     setUpdatedAt(Date.now());
   }, [range]);
 
+  // Poll every 3 s while an agent is running so steps appear live; otherwise every 10 s.
+  const anyRunning = !!snapshot?.agents?.some((a) => a.state === "running");
   useEffect(() => {
     load();
-    const id = window.setInterval(load, 10000);
+    const id = window.setInterval(load, anyRunning ? 3000 : 10000);
     return () => window.clearInterval(id);
-  }, [load]);
+  }, [load, anyRunning]);
 
   return { snapshot, source, updatedAt };
 }
@@ -330,7 +332,7 @@ export default function AgentTransparencyDashboard() {
                   <span className={s.pulseDot} aria-hidden /> Live
                 </span>
               ) : source === "unavailable" ? (
-                <span className={s.previewPill} title="The backend does not provide GET /agent-runs/snapshot yet">
+                <span className={s.previewPill} title="The backend did not answer GET /agent-runs/snapshot. Is it running?">
                   Not connected
                 </span>
               ) : (
@@ -435,7 +437,7 @@ export default function AgentTransparencyDashboard() {
                   </ol>
                 ) : (
                   <p className={s.empty}>
-                    {source === "unavailable" ? "No agent events available — run tracking is not connected yet." : "No events in this time range."}
+                    {source === "unavailable" ? "No agent events available — the backend is not reachable." : "No events in this time range."}
                   </p>
                 )}
               </section>
@@ -724,9 +726,9 @@ export default function AgentTransparencyDashboard() {
                   </>
                 ) : (
                   <>
-                    Agent run tracking is not connected.
+                    Can't reach the agent run tracker.
                     <br />
-                    <span>Real runs appear here once the backend provides GET /agent-runs/snapshot. No sample data is shown.</span>
+                    <span>Start the backend and this page reconnects automatically. No sample data is shown.</span>
                   </>
                 )}
               </p>

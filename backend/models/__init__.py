@@ -4,6 +4,7 @@ from .resume import ResumeDocument, ResumeVersion, ResumeQualityReport
 from .companies import Company, CompanyResearch, CompanyResearchSource, CompanyResearchClaim
 from .applications import Application, ApplicationEvent, ApplicationEmailVersion, EmailDraft, GmailConnection, CareerMemory, JobAlert
 from .audit import ProfileFactHistory
+from .agent_runs import AgentRun
 
 __all__ = [
     "User",
@@ -30,4 +31,5 @@ __all__ = [
     "CareerMemory",
     "JobAlert",
     "ProfileFactHistory",
+    "AgentRun",
 ]

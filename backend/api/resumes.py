@@ -9,6 +9,7 @@ from ..models.jobs import Job
 from ..schemas.resume import ResumeCreate, ResumeGenerate, ResumeUpdate, ResumeTailorRequest
 from ..services.auth_middleware import get_current_user_id
 from ..services.resume_tailor import tailor_cv, TailorUnavailable
+from ..services.agent_runs import track_run
 from .jobs import _user_job_ids
 from ..ai_agents.resume_architect import ResumeArchitect
 from ..ai_agents.resume_quality import ResumeQualityAgent
@@ -91,84 +92,87 @@ def generate_resume(
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db)
 ):
-    resume = db.query(ResumeDocument).filter(
-        ResumeDocument.id == resume_id,
-        ResumeDocument.user_id == user_id
-    ).first()
-    if not resume:
-        raise HTTPException(status_code=404, detail="Resume not found")
+    with track_run(user_id, "cv", f"Generate resume #{resume_id}", input_summary={"resume_id": resume_id, "template": data.template, "target_role": data.target_role}) as run:
+        resume = db.query(ResumeDocument).filter(
+            ResumeDocument.id == resume_id,
+            ResumeDocument.user_id == user_id
+        ).first()
+        if not resume:
+            raise HTTPException(status_code=404, detail="Resume not found")
 
-    profile = db.query(CareerProfile).filter(CareerProfile.id == resume.career_profile_id).first()
-    if not profile:
-        raise HTTPException(status_code=404, detail="Career profile not found")
+        profile = db.query(CareerProfile).filter(CareerProfile.id == resume.career_profile_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Career profile not found")
 
-    # Check profile has at least some data
-    has_data = (
-        profile.personal or profile.professional or profile.experience or
-        profile.education or profile.skills
-    )
-    if not has_data:
-        raise HTTPException(
-            status_code=400,
-            detail="Career profile is empty. Please fill in your profile information at /profile before generating a resume."
+        # Check profile has at least some data
+        has_data = (
+            profile.personal or profile.professional or profile.experience or
+            profile.education or profile.skills
+        )
+        if not has_data:
+            raise HTTPException(
+                status_code=400,
+                detail="Career profile is empty. Please fill in your profile information at /profile before generating a resume."
+            )
+
+        run.step("Build resume from profile", 1, 2)
+        architect = ResumeArchitect()
+        target_role = data.target_role or resume.target_role
+        template = data.template or resume.template
+
+        doc = architect.build(
+            {
+                "personal": profile.personal or {},
+                "professional": profile.professional or {},
+                "education": profile.education or [],
+                "experience": profile.experience or [],
+                "skills": profile.skills or {},
+                "projects": profile.projects or [],
+                "certifications": profile.certifications or [],
+                "achievements": profile.achievements or [],
+                "publications": profile.publications or [],
+                "portfolio": profile.portfolio or [],
+            },
+            target_role=target_role,
+            template=template,
         )
 
-    architect = ResumeArchitect()
-    target_role = data.target_role or resume.target_role
-    template = data.template or resume.template
+        run.step("Save version", 2, 2)
+        # Version management
+        latest = (
+            db.query(ResumeVersion)
+            .filter(ResumeVersion.resume_id == resume.id)
+            .order_by(ResumeVersion.version_number.desc())
+            .first()
+        )
+        next_version = (latest.version_number + 1) if latest else 1
 
-    doc = architect.build(
-        {
-            "personal": profile.personal or {},
-            "professional": profile.professional or {},
-            "education": profile.education or [],
-            "experience": profile.experience or [],
-            "skills": profile.skills or {},
-            "projects": profile.projects or [],
-            "certifications": profile.certifications or [],
-            "achievements": profile.achievements or [],
-            "publications": profile.publications or [],
-            "portfolio": profile.portfolio or [],
-        },
-        target_role=target_role,
-        template=template,
-    )
+        version = ResumeVersion(
+            resume_id=resume.id,
+            version_number=next_version,
+            target_role=target_role,
+            content_snapshot=doc,
+            source_profile_version="v1",
+            status="draft",
+        )
+        db.add(version)
 
-    # Version management
-    latest = (
-        db.query(ResumeVersion)
-        .filter(ResumeVersion.resume_id == resume.id)
-        .order_by(ResumeVersion.version_number.desc())
-        .first()
-    )
-    next_version = (latest.version_number + 1) if latest else 1
+        # Auto-approve after generation so export works immediately
+        resume.approved = True
+        resume.template = template
+        if target_role:
+            resume.target_role = target_role
 
-    version = ResumeVersion(
-        resume_id=resume.id,
-        version_number=next_version,
-        target_role=target_role,
-        content_snapshot=doc,
-        source_profile_version="v1",
-        status="draft",
-    )
-    db.add(version)
-
-    # Auto-approve after generation so export works immediately
-    resume.approved = True
-    resume.template = template
-    if target_role:
-        resume.target_role = target_role
-
-    db.commit()
-    db.refresh(version)
-
-    return {
-        "version_id": version.id,
-        "version_number": next_version,
-        "content_snapshot": doc,
-        "template": template,
-        "target_role": target_role,
-    }
+        db.commit()
+        db.refresh(version)
+        run.set_output({"version_number": next_version, "template": template, "sections": len([k for k, v in doc.items() if v])})
+        return {
+            "version_id": version.id,
+            "version_number": next_version,
+            "content_snapshot": doc,
+            "template": template,
+            "target_role": target_role,
+        }
 
 @router.post("/{resume_id}/quality-check")
 def quality_check(resume_id: int, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
@@ -223,38 +227,44 @@ def approve_resume(resume_id: int, user_id: int = Depends(get_current_user_id), 
 @router.post("/tailor")
 def tailor_resume(req: ResumeTailorRequest, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
     """Grounded AI tailoring of the editor's current CV. Returns proposals only; nothing is saved."""
-    cv = req.cv.model_dump()
-    if not (cv["summary"].strip() or cv["experience"] or cv["skills"]):
-        raise HTTPException(status_code=400, detail="Add a summary, experience or skills to your CV before tailoring it.")
+    with track_run(user_id, "cv", f"Tailor resume for {req.target_role or 'target role'}", input_summary={"target_role": req.target_role, "job_id": req.job_id, "job_description_chars": len(req.job_description or "")}) as run:
+        cv = req.cv.model_dump()
+        if not (cv["summary"].strip() or cv["experience"] or cv["skills"]):
+            raise HTTPException(status_code=400, detail="Add a summary, experience or skills to your CV before tailoring it.")
 
-    job_description = req.job_description or ""
-    if req.job_id is not None:
-        job = db.query(Job).filter(Job.id == req.job_id).first() if req.job_id in _user_job_ids(db, user_id) else None
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
-        parts = [job.title, job.company, job.description,
-                 "Requirements: " + ", ".join(map(str, job.requirements or [])),
-                 "Technologies: " + ", ".join(map(str, job.technologies or [])),
-                 job_description]
-        job_description = "\n".join(p for p in parts if p)
+        job_description = req.job_description or ""
+        if req.job_id is not None:
+            job = db.query(Job).filter(Job.id == req.job_id).first() if req.job_id in _user_job_ids(db, user_id) else None
+            if not job:
+                raise HTTPException(status_code=404, detail="Job not found")
+            parts = [job.title, job.company, job.description,
+                     "Requirements: " + ", ".join(map(str, job.requirements or [])),
+                     "Technologies: " + ", ".join(map(str, job.technologies or [])),
+                     job_description]
+            job_description = "\n".join(p for p in parts if p)
 
-    facts = [
-        {"path": f.path, "value": f.value}
-        for f in db.query(ProfileFact)
-        .join(CareerProfile, CareerProfile.id == ProfileFact.profile_id)
-        .filter(CareerProfile.user_id == user_id, ProfileFact.verified == True)  # noqa: E712
-        .all()
-    ]
+        facts = [
+            {"path": f.path, "value": f.value}
+            for f in db.query(ProfileFact)
+            .join(CareerProfile, CareerProfile.id == ProfileFact.profile_id)
+            .filter(CareerProfile.user_id == user_id, ProfileFact.verified == True)  # noqa: E712
+            .all()
+        ]
 
-    try:
-        return tailor_cv(req.target_role, cv, job_description, facts)
-    except TailorUnavailable as e:
-        reason = ("returned a response that could not be used" if str(e) == "invalid"
-                  else "could not be reached")
-        raise HTTPException(
-            status_code=503,
-            detail=f"AI tailoring is unavailable: the language model {reason}. Your CV was not changed. Please try again later."
-        )
+        run.step("AI tailoring (grounded)", 1, 1)
+        run.log("info", f"{len(facts)} verified profile facts used for grounding")
+        try:
+            result = tailor_cv(req.target_role, cv, job_description, facts)
+            if isinstance(result, dict):
+                run.set_output({k: (len(v) if isinstance(v, (list, dict)) else v) for k, v in result.items() if k != "cv"})
+            return result
+        except TailorUnavailable as e:
+            reason = ("returned a response that could not be used" if str(e) == "invalid"
+                      else "could not be reached")
+            raise HTTPException(
+                status_code=503,
+                detail=f"AI tailoring is unavailable: the language model {reason}. Your CV was not changed. Please try again later."
+            )
 
 def _export_or_500(export_fn, content: Dict[str, Any]) -> bytes:
     try:

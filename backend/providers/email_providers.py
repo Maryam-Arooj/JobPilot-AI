@@ -2,6 +2,8 @@ import os
 import base64
 import logging
 import requests
+
+from ..services.agent_runs import tool_call
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from email.mime.text import MIMEText
@@ -108,26 +110,38 @@ class GmailEmailProvider(EmailProvider):
         }
         draft_payload = {"message": {"raw": raw_b64}}
         try:
-            draft_resp = requests.post(
-                "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
-                headers=headers,
-                json=draft_payload,
-                timeout=15
-            )
+            with tool_call("gmail:drafts.create", "create draft") as tc:
+                draft_resp = requests.post(
+                    "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+                    headers=headers,
+                    json=draft_payload,
+                    timeout=15
+                )
+                tc["summary"] = f"HTTP {draft_resp.status_code}"
+                if draft_resp.status_code not in (200, 201):
+                    tc["status"] = "failed"
 
             if draft_resp.status_code == 401 and gmail_conn.refresh_token:
                 # Token expired; try refreshing
-                new_token = self._refresh_access_token(gmail_conn.refresh_token)
+                with tool_call("google:oauth.refresh", "refresh expired Gmail token") as tc:
+                    new_token = self._refresh_access_token(gmail_conn.refresh_token)
+                    tc["summary"] = "token refreshed" if new_token else "refresh failed"
+                    if not new_token:
+                        tc["status"] = "failed"
                 if new_token:
                     gmail_conn.access_token = new_token
                     db_session.commit()
                     headers["Authorization"] = f"Bearer {new_token}"
-                    draft_resp = requests.post(
-                        "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
-                        headers=headers,
-                        json=draft_payload,
-                        timeout=15
-                    )
+                    with tool_call("gmail:drafts.create", "retry with refreshed token") as tc:
+                        draft_resp = requests.post(
+                            "https://gmail.googleapis.com/gmail/v1/users/me/drafts",
+                            headers=headers,
+                            json=draft_payload,
+                            timeout=15
+                        )
+                        tc["summary"] = f"HTTP {draft_resp.status_code}"
+                        if draft_resp.status_code not in (200, 201):
+                            tc["status"] = "failed"
         except requests.RequestException as e:
             logger.error("Gmail draft request failed for user %s: %s", user_id, e)
             raise GmailDraftError("Gmail API request failed") from e

@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional
 import requests
 from dotenv import load_dotenv
 
+from .agent_runs import run_warn, tool_call
+
 # Ensure .env is loaded from backend directory or current working directory
 env_paths = [
     os.path.join(os.path.dirname(__file__), "..", ".env"),
@@ -204,11 +206,17 @@ def call_nvidia_llm(
     base_url = get_nvidia_base_url()
 
     last_error: Optional[LLMError] = None
-    for model in models:
+    for i, model in enumerate(models):
         try:
-            return _complete(model, messages, temperature, max_tokens, request_timeout, api_key, base_url, json_mode)
+            # Recorded on the live agent dashboard when called inside a tracked run (no-op otherwise).
+            with tool_call(f"nvidia:{model}", f"chat completion, max_tokens={max_tokens}") as t:
+                content = _complete(model, messages, temperature, max_tokens, request_timeout, api_key, base_url, json_mode)
+                t["summary"] = f"{len(content)} chars returned"
+            return content
         except LLMError as e:
             logger.warning("NVIDIA call failed: %s", e)
+            if i + 1 < len(models):
+                run_warn(f"{model} failed ({e}); trying fallback model {models[i + 1]}")
             last_error = e
     raise last_error  # type: ignore[misc]
 

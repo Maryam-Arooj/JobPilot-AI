@@ -4,6 +4,7 @@ from typing import Dict, List, Any
 import docx
 from pdfminer.high_level import extract_text as extract_pdf_text
 from ..ai_agents.profile_agent import ProfileAgent
+from .agent_runs import run_warn, tool_call
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,12 @@ def extract_text_from_file_bytes(file_bytes: bytes, filename: str) -> str:
 
 def extract_facts_from_bytes(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """Extract full structured profile and facts from uploaded document bytes."""
-    text = extract_text_from_file_bytes(file_bytes, filename)
+    kind = (filename.rsplit(".", 1)[-1] if "." in filename else "text").lower()
+    with tool_call(f"parser:{kind}", f"extract text from {filename}") as t:
+        text = extract_text_from_file_bytes(file_bytes, filename)
+        t["summary"] = f"{len(text)} characters of text extracted"
+    if not text.strip():
+        run_warn("No text could be extracted from the document (scanned image or empty file?)")
     agent = ProfileAgent()
     return agent.extract_from_text(text)
 

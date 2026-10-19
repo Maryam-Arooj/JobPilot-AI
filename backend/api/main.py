@@ -34,6 +34,7 @@ from .companies import router as companies_router
 from .gmail import router as gmail_router
 from .career_memory import router as career_memory_router
 from .job_alerts import router as job_alerts_router
+from .agent_runs import router as agent_runs_router
 
 app = FastAPI(title="JobPilot AI / YourCareer Buddy API", version="0.1.0")
 
@@ -66,6 +67,7 @@ app.include_router(applications_router)
 app.include_router(gmail_router)
 app.include_router(career_memory_router)
 app.include_router(job_alerts_router)
+app.include_router(agent_runs_router)
 
 @app.get("/health")
 def health():

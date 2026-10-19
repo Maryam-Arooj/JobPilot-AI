@@ -1,6 +1,7 @@
 import os
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List
+from ..services.agent_runs import run_warn, tool_call
 
 class CompanyResearchProvider(ABC):
     @abstractmethod
@@ -16,16 +17,20 @@ class FirecrawlCompanyResearchProvider(CompanyResearchProvider):
         target_website = official_website or f"https://www.{company_name.lower().replace(' ', '')}.com"
         
         if not self.api_key:
+            run_warn("Company research: FIRECRAWL_API_KEY is missing, so placeholder text was used (not verified).")
             return self._mock_research(company_name, target_website)
 
         try:
             import requests
             headers = {"Authorization": f"Bearer {self.api_key}"}
             payload = {"url": target_website}
-            resp = requests.post("https://api.firecrawl.dev/v1/scrape", json=payload, headers=headers, timeout=15)
-            resp.raise_for_status()
-            data = resp.json().get("data", {})
-            markdown = data.get("markdown", "")
+            with tool_call("firecrawl:scrape", f"company site {target_website}") as tc:
+                resp = requests.post("https://api.firecrawl.dev/v1/scrape", json=payload, headers=headers, timeout=15)
+                resp.raise_for_status()
+                data = resp.json().get("data", {})
+                markdown = data.get("markdown", "")
+                tc["summary"] = f"{len(markdown)} chars scraped from {target_website}"
+            run_warn("Company research summary is still template text, not derived from the scraped page (fixed in the Email Agent task).")
             
             return {
                 "company_name": company_name,
@@ -53,7 +58,8 @@ class FirecrawlCompanyResearchProvider(CompanyResearchProvider):
                     }
                 ]
             }
-        except Exception:
+        except Exception as e:
+            run_warn(f"Company research failed ({type(e).__name__}); placeholder text was used (not verified).")
             return self._mock_research(company_name, target_website)
 
     def _mock_research(self, company_name: str, official_website: str) -> Dict[str, Any]:
