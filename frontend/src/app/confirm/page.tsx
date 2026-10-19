@@ -211,9 +211,14 @@ export default function DocumentConfirmationPage() {
     }
   };
 
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
+
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      handleFileUpload(e.target.files[0]);
+    const file = e.target.files && e.target.files[0];
+    // Reset so choosing the same file again still triggers a new upload.
+    e.target.value = '';
+    if (file) {
+      handleFileUpload(file);
     }
   };
 
@@ -388,10 +393,13 @@ export default function DocumentConfirmationPage() {
           className="card-base p-8 bg-surface border-2 border-dashed border-line hover:border-accent/60 rounded-2xl text-center flex flex-col items-center justify-center space-y-3 transition-all cursor-pointer relative group shadow-xs"
         >
           <input
+            ref={fileInputRef}
             type="file"
             onChange={handleFileInputChange}
             accept=".pdf,.docx,.txt"
-            className="absolute inset-0 opacity-0 cursor-pointer"
+            disabled={isUploading}
+            aria-label="Choose a CV file to upload"
+            className="absolute inset-0 z-10 h-full w-full opacity-0 cursor-pointer disabled:cursor-wait"
           />
           <div className="w-14 h-14 rounded-full bg-inset border border-line flex items-center justify-center text-fg group-hover:scale-105 transition-transform shadow-xs">
             <Upload className={`w-6 h-6 text-muted group-hover:text-fg ${isUploading ? 'animate-bounce' : ''}`} />
@@ -404,6 +412,18 @@ export default function DocumentConfirmationPage() {
               Supports real PDF, DOCX, and TXT resumes with full text parsing
             </p>
           </div>
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+            disabled={isUploading}
+            className="relative z-20 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60 disabled:cursor-wait"
+          >
+            <Upload className="h-4 w-4" />
+            {isUploading ? 'Reading your CV… (up to a minute)' : 'Choose CV file'}
+          </button>
+          {message && message.type === 'error' && (
+            <p className="relative z-20 text-xs text-bad max-w-xl">{message.text}</p>
+          )}
           {parsedDocName && (
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-2 border border-line text-xs font-mono text-fg">
               <FileCheck className="w-3.5 h-3.5 text-ok" />
