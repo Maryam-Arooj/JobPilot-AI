@@ -100,9 +100,19 @@ def main():
         sys.exit("Backend is not running on 127.0.0.1:8000. Start it and run again.")
     h = {"Authorization": f"Bearer {token()}"}
 
-    print("\n-- 1. Read a CV for review (/documents/parse, DOCX, nothing saved)")
+    print("\n-- 0. Quick read (instant, no AI)")
     t0 = time.time()
-    r = requests.post(f"{API}/documents/parse", headers=h, timeout=180,
+    q = requests.post(f"{API}/documents/parse", headers=h, timeout=60,
+                      files={"file": ("Jordan_Avery_CV.docx", docx_bytes(),
+                                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document")})
+    qt = time.time() - t0
+    qb = q.json() if q.ok else {}
+    check("quick read answers within 5 s with fields filled", q.ok and qt < 5 and bool(qb.get("profile_data", {}).get("personal", {}).get("name")),
+          f"{qt:.1f}s, {len(qb.get('facts', []))} facts, refining in background: {qb.get('refining')}")
+
+    print("\n-- 1. Full AI read for review (/documents/parse?wait=true, nothing saved)")
+    t0 = time.time()
+    r = requests.post(f"{API}/documents/parse?wait=true", headers=h, timeout=300,
                       files={"file": ("Jordan_Avery_CV.docx", docx_bytes(),
                                       "application/vnd.openxmlformats-officedocument.wordprocessingml.document")})
     print(f"  HTTP {r.status_code} in {time.time() - t0:.1f}s")
@@ -130,7 +140,7 @@ def main():
 
     print("\n-- 2. Upload to the profile (/documents/upload): facts must wait for confirmation")
     t0 = time.time()
-    r = requests.post(f"{API}/documents/upload", headers=h, timeout=180,
+    r = requests.post(f"{API}/documents/upload?wait=true", headers=h, timeout=300,
                       files={"file": ("Jordan_Avery_CV.txt", CV_TEXT.encode(), "text/plain")})
     print(f"  HTTP {r.status_code} in {time.time() - t0:.1f}s")
     up = r.json() if r.ok else {}

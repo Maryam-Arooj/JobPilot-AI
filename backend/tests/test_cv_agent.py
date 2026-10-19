@@ -130,8 +130,13 @@ def test_fallback_copies_only_literal_text_and_never_invents():
     assert p["personal"]["location"] == "Austin, TX"
     assert p["professional"]["headline"] == "Senior Data Engineer"
     assert p["professional"]["experience_years"] == 7
-    assert p["experience"] == [] and p["education"] == []
-    assert {"experience", "education"} <= set(out["missing_fields"])
+    # jobs and education are now copied literally (no AI): every value is text from the CV
+    assert len(p["experience"]) == 2 and len(p["education"]) == 1
+    src = pa._Source(CV)
+    for e in p["experience"] + p["education"]:
+        for k, v in e.items():
+            if isinstance(v, str):
+                assert src.has(v) or src.mostly_has(v), (k, v)
     blob = json.dumps(p)
     for bad in ["Bachelor of Science", "2023", "Tech Company", "Professional Experience", "Software Engineer",
                 "Led development", "Specialist", "Production project delivery"]:
@@ -162,9 +167,10 @@ def test_normalize_skills_removes_overlapping_categories():
 
 # ---------------- endpoints ----------------
 
-def _upload(headers, text=CV, route="/documents/upload", llm=LLM_OUTPUT):
+def _upload(headers, text=CV, route="/documents/upload", llm=LLM_OUTPUT, wait=True):
+    url = route + ("?wait=true" if wait and route.startswith("/documents") else "")
     with mock.patch.object(pa, "call_nvidia_json", return_value=json.loads(json.dumps(llm))):
-        return client.post(route, headers=headers, files={"file": ("cv.txt", text.encode(), "text/plain")})
+        return client.post(url, headers=headers, files={"file": ("cv.txt", text.encode(), "text/plain")})
 
 
 def test_upload_saves_grounded_profile_with_unverified_facts_then_confirm_verifies():
@@ -280,7 +286,8 @@ def test_image_only_pdf_is_read_with_the_vision_model():
     from backend.services import document_service as ds
     pdf = _image_only_pdf()
     assert ds._pdf_text_pdfminer(pdf) == "" and ds._pdf_text_pymupdf(pdf) == ""
-    with mock.patch.object(nvidia_llm, "call_nvidia_vision_ocr", return_value=CV) as vision:
+    with mock.patch.object(ds, "_ocr_pdf_local", return_value=None), \
+         mock.patch.object(nvidia_llm, "call_nvidia_vision_ocr", return_value=CV) as vision:
         text = ds.extract_text_from_file_bytes(pdf, "Designed CV.pdf")
     assert vision.call_count == 1 and "Jordan Avery" in text
     img = ds._pdf_page_images(pdf)[0]
@@ -296,12 +303,107 @@ def test_unreadable_pdf_returns_no_text_instead_of_raw_bytes():
 def test_upload_of_image_only_pdf_extracts_profile_via_vision():
     pytest.importorskip("pymupdf")
     uid, headers = _user()
-    with mock.patch.object(nvidia_llm, "call_nvidia_vision_ocr", return_value=CV), \
+    from backend.services import document_service as ds
+    with mock.patch.object(ds, "_ocr_pdf_local", return_value=None), \
+         mock.patch.object(nvidia_llm, "call_nvidia_vision_ocr", return_value=CV), \
          mock.patch.object(pa, "call_nvidia_json", return_value=json.loads(json.dumps(LLM_OUTPUT))):
-        r = client.post("/documents/parse", headers=headers, files={"file": ("cv.pdf", _image_only_pdf(), "application/pdf")})
+        r = client.post("/documents/parse?wait=true", headers=headers, files={"file": ("cv.pdf", _image_only_pdf(), "application/pdf")})
     assert r.status_code == 200 and r.json()["extraction_method"] == "llm"
     assert r.json()["profile_data"]["personal"]["name"] == "Jordan Avery"
     snap = client.get("/agent-runs/snapshot?range=1h", headers=headers).json()
     run = snap["runs"][0]
     assert any(t["name"].startswith("parser:pdf") for t in run["tool_calls"])
     assert any("vision model" in l["message"] for l in run["logs"])
+
+
+
+# ---------------- instant quick read + background AI refinement ----------------
+
+def test_quick_read_fills_all_fields_instantly_and_literally():
+    import time
+    t0 = time.time()
+    out = pa.ProfileAgent().quick_extract(CV)
+    assert time.time() - t0 < 1.0
+    p = out["profile_data"]
+    assert out["extraction_method"] == "quick"
+    assert p["personal"]["name"] == "Jordan Avery" and p["personal"]["location"] == "Austin, TX"
+    assert p["professional"]["headline"] == "Senior Data Engineer" and p["professional"]["experience_years"] == 7
+    assert [e.get("company") or e.get("title") for e in p["experience"]] and len(p["experience"]) == 2
+    assert p["experience"][0]["start_date"] == "2021" and p["experience"][0]["end_date"] == "Present"
+    assert "Airflow and Spark" in p["experience"][0]["description"]
+    assert p["education"] and p["education"][0]["year"] == "2018"
+    src = pa._Source(CV)
+    for path, value in [(k, v) for e in p["experience"] for k, v in e.items() if isinstance(v, str)]:
+        assert src.has(value) or src.mostly_has(value), (path, value)
+
+
+def test_parse_returns_quick_result_then_refines_in_background():
+    import time
+    uid, headers = _user()
+    with mock.patch.object(pa, "call_nvidia_json", return_value=json.loads(json.dumps(LLM_OUTPUT))):
+        r = client.post("/documents/parse", headers=headers, files={"file": ("cv.txt", CV.encode(), "text/plain")})
+        body = r.json()
+        assert r.status_code == 200 and body["extraction_method"] == "quick" and body["refining"]
+        assert body["profile_data"]["personal"]["name"] == "Jordan Avery"
+        job = body["refine_job_id"]
+        for _ in range(100):
+            ref = client.get(f"/documents/refine/{job}", headers=headers).json()
+            if ref["status"] != "running":
+                break
+            time.sleep(0.1)
+    assert ref["status"] == "done" and ref["extraction_method"] == "llm"
+    assert "Google" not in json.dumps(ref["profile_data"])
+    _, other = _user()
+    assert client.get(f"/documents/refine/{job}", headers=other).status_code == 404
+    assert _profile(uid)[0] is None  # parse never saves
+
+
+def test_upload_saves_quick_result_then_background_refinement_updates_profile():
+    import time
+    uid, headers = _user()
+    with mock.patch.object(pa, "call_nvidia_json", return_value=json.loads(json.dumps(LLM_OUTPUT))):
+        r = client.post("/documents/upload", headers=headers, files={"file": ("cv.txt", CV.encode(), "text/plain")})
+        body = r.json()
+        assert body["extraction_method"] == "quick" and body["needs_review"] > 0 and body["refining"]
+        assert _profile(uid)[0].personal["name"] == "Jordan Avery"   # visible immediately
+        for _ in range(100):
+            ref = client.get(f"/documents/refine/{body['refine_job_id']}", headers=headers).json()
+            if ref["status"] != "running":
+                break
+            time.sleep(0.1)
+    assert ref["status"] == "done"
+    profile, facts = _profile(uid)
+    assert [e["company"] for e in profile.experience] == ["Northwind Analytics", "Contoso Retail"]
+    assert all(not f.verified for f in facts)
+
+
+def test_refinement_failure_keeps_quick_result_and_reports_it():
+    import time
+    uid, headers = _user()
+    with mock.patch.object(pa, "call_nvidia_json", side_effect=nvidia_llm.LLMUnavailableError("timed out")):
+        body = client.post("/documents/parse", headers=headers, files={"file": ("cv.txt", CV.encode(), "text/plain")}).json()
+        for _ in range(100):
+            ref = client.get(f"/documents/refine/{body['refine_job_id']}", headers=headers).json()
+            if ref["status"] != "running":
+                break
+            time.sleep(0.1)
+    assert ref["status"] == "failed" and ref["error"]
+    assert body["profile_data"]["personal"]["email"] == "jordan.avery@example.com"
+
+
+def test_ocr_lines_are_read_column_by_column():
+    from backend.services.document_service import order_ocr_lines
+    def box(x0, y0, x1, y1):
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    items = [  # left sidebar (x 20-260) and main column (x 320-900), interleaved vertically
+        (box(20, 50, 250, 70), "CONTACT", 0.99), (box(320, 50, 700, 80), "Maryam Arooj", 0.99),
+        (box(20, 90, 250, 110), "maryam@example.com", 0.98), (box(320, 95, 800, 115), "AI Engineer", 0.97),
+        (box(20, 130, 200, 150), "SKILLS", 0.99), (box(320, 140, 600, 160), "EXPERIENCE", 0.99),
+        (box(20, 170, 180, 190), "Python, SQL", 0.95), (box(320, 180, 880, 200), "Nexa Labs  Jan 2024 - Present", 0.95),
+        (box(20, 210, 150, 230), "noise", 0.2),
+    ]
+    text = order_ocr_lines(items, 1000)
+    lines = [l for l in text.splitlines() if l]
+    assert lines[:4] == ["CONTACT", "maryam@example.com", "SKILLS", "Python, SQL"]
+    assert lines[4:] == ["Maryam Arooj", "AI Engineer", "EXPERIENCE", "Nexa Labs  Jan 2024 - Present"]
+    assert "noise" not in text

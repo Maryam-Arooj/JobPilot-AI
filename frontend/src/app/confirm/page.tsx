@@ -150,56 +150,87 @@ export default function DocumentConfirmationPage() {
     loadFactsAndProfile();
   }, []);
 
+  // Background AI refinement after the instant quick read
+  const [refining, setRefining] = useState(false);
+  const [pendingRefined, setPendingRefined] = useState<any>(null);
+  const touchedRef = React.useRef(false);
+  const refineTokenRef = React.useRef(0);
+
+  const applyExtraction = (resData: any, fileName: string, phase: 'quick' | 'refined' | 'full', seconds?: number) => {
+    if (resData.profile_data) setParsedProfile(resData.profile_data);
+    const list: any[] = Array.isArray(resData.facts) ? resData.facts : [];
+    const newFacts: ExtractedFact[] = list.map((f: any, idx: number) => ({
+      id: `parsed_${Date.now()}_${idx}`,
+      path: f.path || 'document.fact',
+      field: f.path || 'Extracted Fact',
+      value: f.value,
+      source: fileName,
+      confidence: f.confidence || 0.9,
+      verified: false,
+      category: categorizePath(f.path)
+    }));
+    setFacts(newFacts);
+    touchedRef.current = false;
+    const dropped = Array.isArray(resData.dropped) ? resData.dropped.length : 0;
+    const missing = Array.isArray(resData.missing_fields) ? resData.missing_fields : [];
+    const missingText = missing.length ? ` Not found in the CV: ${missing.join(', ')}.` : '';
+    const took = seconds !== undefined ? ` in ${seconds.toFixed(1)} s` : '';
+    if (resData.extraction_method === 'none' || newFacts.length === 0) {
+      setMessage({ type: 'error', text: `No profile facts could be read from "${fileName}". If it is a scanned image, upload a text-based PDF or DOCX instead.` });
+    } else if (phase === 'quick') {
+      setMessage({ type: 'info', text: `Read "${fileName}"${took}: ${newFacts.length} facts copied exactly from your CV.${missingText} The AI is now refining them in the background — this page updates by itself.` });
+    } else if (resData.extraction_method === 'fallback_partial') {
+      setMessage({ type: 'info', text: `${resData.message || 'AI extraction is unavailable right now.'} ${newFacts.length} facts were copied exactly from "${fileName}".${missingText}` });
+    } else {
+      setMessage({ type: 'success', text: `AI refined "${fileName}": ${newFacts.length} facts need your review.${dropped ? ` ${dropped} AI value(s) were removed because they are not in your CV.` : ''}${missingText} Edit or reject anything wrong, then click "Confirm & Sync All to Profile".` });
+    }
+  };
+
+  const pollRefinement = async (jobId: string, fileName: string, token: number) => {
+    setRefining(true);
+    const started = Date.now();
+    try {
+      while (refineTokenRef.current === token && Date.now() - started < 5 * 60 * 1000) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (refineTokenRef.current !== token) return;
+        let res: any;
+        try {
+          res = await apiFetch(`/documents/refine/${jobId}`);
+        } catch {
+          continue;
+        }
+        if (res.status === 'running') continue;
+        if (res.status === 'done') {
+          if (touchedRef.current) {
+            setPendingRefined({ ...res, fileName });
+            setMessage({ type: 'info', text: 'The AI finished refining your CV. You already edited some facts, so nothing was replaced — click "Use AI result" to load it.' });
+          } else {
+            applyExtraction(res, fileName, 'refined');
+          }
+        } else {
+          setMessage({ type: 'info', text: `AI refinement was not available (${res.error || 'unknown reason'}). The facts below were copied exactly from your CV — review them and confirm.` });
+        }
+        return;
+      }
+    } finally {
+      if (refineTokenRef.current === token) setRefining(false);
+    }
+  };
+
   const handleFileUpload = async (file: File) => {
     setIsUploading(true);
     setMessage(null);
+    setPendingRefined(null);
+    const token = ++refineTokenRef.current;
+    const t0 = performance.now();
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const resData = await apiFetch('/documents/parse', {
-        method: 'POST',
-        body: formData
-      });
-
-      setParsedDocName(resData.filename || file.name);
-
-      if (resData.profile_data) {
-        setParsedProfile(resData.profile_data);
-      }
-
-      if (resData.facts && Array.isArray(resData.facts)) {
-        const newFacts: ExtractedFact[] = resData.facts.map((f: any, idx: number) => ({
-          id: `parsed_${Date.now()}_${idx}`,
-          path: f.path || 'document.fact',
-          field: f.path || 'Extracted Fact',
-          value: f.value,
-          source: resData.filename || file.name,
-          confidence: f.confidence || 0.95,
-          verified: false,
-          category: categorizePath(f.path)
-        }));
-
-        setFacts(newFacts);
-        const dropped = Array.isArray(resData.dropped) ? resData.dropped.length : 0;
-        const missing = Array.isArray(resData.missing_fields) ? resData.missing_fields : [];
-        const missingText = missing.length ? ` Not found in the CV: ${missing.join(', ')}.` : '';
-        if (resData.extraction_method === 'fallback_partial') {
-          setMessage({
-            type: 'info',
-            text: `${resData.message || 'AI extraction is unavailable right now.'} ${newFacts.length} facts were copied exactly from "${resData.filename || file.name}".${missingText}`
-          });
-        } else if (resData.extraction_method === 'none' || newFacts.length === 0) {
-          setMessage({
-            type: 'error',
-            text: `No profile facts could be read from "${resData.filename || file.name}". If it is a scanned image, upload a text-based PDF or DOCX instead.`
-          });
-        } else {
-          setMessage({
-            type: 'success',
-            text: `AI read "${resData.filename || file.name}": ${newFacts.length} facts need your review.${dropped ? ` ${dropped} value(s) the AI suggested were removed because they are not in your CV.` : ''}${missingText} Edit or reject anything wrong, then click "Confirm & Sync All to Profile".`
-          });
-        }
-      }
+      const resData = await apiFetch('/documents/parse', { method: 'POST', body: formData });
+      const fileName = resData.filename || file.name;
+      setParsedDocName(fileName);
+      applyExtraction(resData, fileName, resData.refining ? 'quick' : 'full', (performance.now() - t0) / 1000);
+      if (resData.refine_job_id) pollRefinement(resData.refine_job_id, fileName, token);
     } catch (err: any) {
       console.error('File parse error:', err);
       setMessage({
@@ -230,6 +261,7 @@ export default function DocumentConfirmationPage() {
   };
 
   const handleConfirmFact = async (factId: string | number) => {
+    touchedRef.current = true;
     try {
       if (typeof factId === 'number') {
         await apiFetch('/profiles/me/facts/confirm', {
@@ -244,6 +276,7 @@ export default function DocumentConfirmationPage() {
   };
 
   const handleRejectFact = async (factId: string | number) => {
+    touchedRef.current = true;
     try {
       if (typeof factId === 'number') {
         await apiFetch('/profiles/me/facts/reject', {
@@ -268,6 +301,7 @@ export default function DocumentConfirmationPage() {
   };
 
   const saveEdit = (factId: string | number) => {
+    touchedRef.current = true;
     setFacts(prev => prev.map(f => {
       if (f.id === factId) {
         let updatedVal: any = editValue;
@@ -419,10 +453,24 @@ export default function DocumentConfirmationPage() {
             className="relative z-20 inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-60 disabled:cursor-wait"
           >
             <Upload className="h-4 w-4" />
-            {isUploading ? 'Reading your CV… (up to a minute)' : 'Choose CV file'}
+            {isUploading ? 'Reading your CV…' : 'Choose CV file'}
           </button>
           {message && message.type === 'error' && (
             <p className="relative z-20 text-xs text-bad max-w-xl">{message.text}</p>
+          )}
+          {refining && (
+            <div className="relative z-20 inline-flex items-center gap-2 rounded-full border border-accent/40 bg-accent-soft px-3 py-1 text-xs text-accent">
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" /> AI is refining your CV in the background…
+            </div>
+          )}
+          {pendingRefined && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); applyExtraction(pendingRefined, pendingRefined.fileName, 'refined'); setPendingRefined(null); }}
+              className="relative z-20 inline-flex items-center gap-2 rounded-lg border border-accent px-3 py-1.5 text-xs font-semibold text-accent hover:bg-accent-soft"
+            >
+              <Sparkles className="h-3.5 w-3.5" /> Use AI result
+            </button>
           )}
           {parsedDocName && (
             <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface-2 border border-line text-xs font-mono text-fg">

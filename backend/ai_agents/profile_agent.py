@@ -305,15 +305,142 @@ def _section(text: str, names: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+_DATE = r"(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+)?(?:19|20)\d{2}"
+_RANGE = re.compile(rf"({_DATE})\s*(?:-|–|—|to|until)\s*({_DATE}|present|current|now|today)", re.I)
+_SINGLE_YEAR = re.compile(r"\b((?:19|20)\d{2})\b")
+_BULLET = re.compile(r"^\s*[•\-\*–·▪●◦➢✓]\s*")
+_HEADING_LINE = re.compile(rf"^\s*{SECTION_HEADINGS}\s*[:\-]?\s*$", re.I)
+
+
+def split_sections(text: str) -> Dict[str, List[str]]:
+    """Map section heading (upper-case) -> its lines, plus '_top' for the lines before the first heading."""
+    sections: Dict[str, List[str]] = {"_top": []}
+    current = "_top"
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if _HEADING_LINE.match(line):
+            current = re.sub(r"[\s:\-]+$", "", line).upper()
+            sections.setdefault(current, [])
+            continue
+        sections.setdefault(current, []).append(line)
+    return sections
+
+
+def _section_lines(sections: Dict[str, List[str]], *names: str) -> List[str]:
+    out: List[str] = []
+    for key, lines in sections.items():
+        if any(key == n or key.endswith(" " + n) for n in names):
+            out.extend(lines)
+    return out
+
+
+def _is_header_line(line: str) -> bool:
+    return (not _BULLET.match(line) and len(line) <= 90 and len(line.split()) <= 12
+            and not line.rstrip().endswith((".", ";")))
+
+
+def _split_header(text: str) -> List[str]:
+    parts = [p.strip(" ,|·-–—()") for p in re.split(r"\s+[|·•@]\s+|\s+[-–—]\s+|,\s+(?=[A-Z])|\s+at\s+", text) if p.strip(" ,|·-–—()")]
+    return parts
+
+
+def parse_experience(lines: List[str]) -> List[Dict[str, Any]]:
+    """Literal job entries: each entry is anchored on a date range; header lines above it give title/company."""
+    entries: List[Dict[str, Any]] = []
+    i, n = 0, len(lines)
+    date_idx = [k for k, l in enumerate(lines) if _RANGE.search(l)]
+    for pos, k in enumerate(date_idx):
+        m = _RANGE.search(lines[k])
+        inline = (lines[k][:m.start()] + " " + lines[k][m.end():]).strip(" ,|·-–—()")
+        header_lines = []
+        prev_end = date_idx[pos - 1] + 1 if pos else 0
+        j = k - 1
+        while j >= prev_end and len(header_lines) < 2 and _is_header_line(lines[j]):
+            header_lines.insert(0, lines[j]); j -= 1
+        if pos and entries:
+            # lines between the previous date line and this header are the previous job's description
+            prev_desc = [l for l in lines[date_idx[pos - 1] + 1: j + 1]]
+            if prev_desc:
+                entries[-1]["description"] = " | ".join(_BULLET.sub("", l) for l in prev_desc)
+        parts = _split_header(" | ".join(h for h in header_lines + ([inline] if inline else []) if h))
+        entry: Dict[str, Any] = {"start_date": m.group(1).strip(), "end_date": m.group(2).strip()}
+        if parts:
+            entry["title"] = parts[0]
+        if len(parts) > 1:
+            entry["company"] = parts[1]
+        if len(parts) > 2:
+            entry["location"] = parts[2]
+        if entry.get("title") or entry.get("company"):
+            entries.append(entry)
+    if date_idx and entries:
+        tail = lines[date_idx[-1] + 1:]
+        if tail:
+            entries[-1]["description"] = " | ".join(_BULLET.sub("", l) for l in tail)
+    return entries
+
+
+def parse_education(lines: List[str]) -> List[Dict[str, Any]]:
+    """Literal education entries: a degree/institution line (or two) with a year."""
+    entries: List[Dict[str, Any]] = []
+    buf: List[str] = []
+    degree_words = re.compile(r"(?i)\b(bachelor|master|ba|bs|bsc|b\.sc|ms|msc|m\.sc|mba|phd|ph\.d|bba|bcs|bse|be|btech|mtech|diploma|associate|degree|intermediate|matric|fsc|f\.sc|ics|o.?level|a.?level|hssc|ssc|certificate)\b")
+    for line in lines:
+        clean = _BULLET.sub("", line)
+        buf.append(clean)
+        year = _RANGE.search(clean) or _SINGLE_YEAR.search(clean)
+        if year or len(buf) >= 3:
+            text = " | ".join(buf)
+            ym = _RANGE.search(text)
+            year_text = ym.group(0) if ym else (_SINGLE_YEAR.search(text).group(1) if _SINGLE_YEAR.search(text) else "")
+            body = text.replace(year_text, "") if year_text else text
+            parts = _split_header(body)
+            entry: Dict[str, Any] = {}
+            deg = next((p for p in parts if degree_words.search(p)), None)
+            if deg:
+                entry["degree"] = deg
+                rest = [p for p in parts if p != deg]
+                if rest:
+                    entry["institution"] = rest[0]
+            elif parts:
+                entry["institution"] = parts[0]
+                if len(parts) > 1:
+                    entry["degree"] = parts[1]
+            if year_text:
+                entry["year"] = year_text
+            if entry.get("degree") or entry.get("institution"):
+                entries.append(entry)
+            buf = []
+    return entries
+
+
+def parse_projects(lines: List[str]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for line in lines:
+        clean = _BULLET.sub("", line)
+        m = re.match(r"^(.{3,60}?)\s+(?:[-–—:|])\s+(.{10,})$", clean)
+        if m:
+            out.append({"name": m.group(1).strip(), "description": m.group(2).strip()})
+        elif _is_header_line(clean) and len(clean) <= 60:
+            out.append({"name": clean})
+        elif out:
+            out[-1]["description"] = (out[-1].get("description", "") + " " + clean).strip()
+    return out[:10]
+
+
 def fallback_extract(text: str) -> Dict[str, Any]:
-    """Copy only what can be read literally. Never invents anything."""
+    """Quick literal extraction (no AI, < 1 s): copies only text that is in the CV, into the right fields."""
+    sections = split_sections(text)
     personal: Dict[str, str] = {}
     m = re.search(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", text)
     if m:
         personal["email"] = m.group(0)
-    m = re.search(r"(?<![\w])(\+?\d[\d\s().-]{7,}\d)(?![\w])", text)
-    if m and len(_digits(m.group(1))) >= 8 and not re.fullmatch(r"\d{4}\s*-\s*\d{4}", m.group(1).strip()):
-        personal["phone"] = m.group(1).strip()
+    for m in re.finditer(r"(?<![\w])(\+?\d[\d\s().-]{7,}\d)(?![\w])", text):
+        cand = m.group(1).strip()
+        if len(_digits(cand)) >= 8 and not _RANGE.search(cand) and not re.fullmatch(r"(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}", cand):
+            personal["phone"] = cand
+            break
     m = re.search(r"(?:https?://)?(?:www\.)?linkedin\.com/in/[A-Za-z0-9_-]+/?", text, re.I)
     if m:
         personal["linkedin"] = m.group(0)
@@ -321,20 +448,17 @@ def fallback_extract(text: str) -> Dict[str, Any]:
     if m:
         personal["github"] = m.group(0)
 
-    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
-    if lines:
-        first = lines[0]
-        m = re.match(r"(?:name\s*[:\-]\s*)?([A-Z][a-zA-Z'.-]+(?:\s+[A-Z][a-zA-Z'.-]+){1,3})$", first)
-        if m and not re.search(r"\d|@|http", first) and not re.fullmatch(SECTION_HEADINGS, first, re.I):
-            personal["name"] = m.group(1)
+    top = sections.get("_top") or [l.strip() for l in text.splitlines() if l.strip()][:4]
     professional: Dict[str, Any] = {}
-    if personal.get("name") and len(lines) > 1:
-        second = lines[1]
-        if (len(second.split()) <= 8 and not re.search(r"@|\d|http|\|", second)
-                and not re.fullmatch(SECTION_HEADINGS, second, re.I)):
-            professional["headline"] = second
-    # location: a "City, Region" segment on the contact line (the line with the email/phone)
-    for line in lines[:6]:
+    for idx, line in enumerate(top[:3]):
+        mm = re.match(r"(?:name\s*[:\-]\s*)?([A-Za-z][a-zA-Z'.-]+(?:\s+[A-Za-z][a-zA-Z'.-]+){1,3})$", line)
+        if mm and not re.search(r"\d|@|http", line):
+            personal["name"] = mm.group(1)
+            nxt = top[idx + 1] if idx + 1 < len(top) else ""
+            if nxt and len(nxt.split()) <= 10 and not re.search(r"@|\d{3}|http", nxt):
+                professional["headline"] = nxt.split(" | ")[0].strip()
+            break
+    for line in (top + text.splitlines())[:12]:
         if "@" in line or re.search(r"\d{3}", line):
             for seg in re.split(r"[|·•]", line):
                 seg = seg.strip()
@@ -343,35 +467,37 @@ def fallback_extract(text: str) -> Dict[str, Any]:
                     break
         if "location" in personal:
             break
-    m = re.search(r"(?im)^\s*location\s*[:\-]\s*(.{3,60})$", text)
+    m = re.search(r"(?im)^\s*(?:location|address)\s*[:\-]\s*(.{3,60})$", text)
     if m:
         personal["location"] = m.group(1).strip()
 
-    summary = _section(text, "PROFILE|SUMMARY|ABOUT ME|PROFESSIONAL SUMMARY|EXECUTIVE SUMMARY")
-    if summary:
-        professional["summary"] = re.sub(r"\s+", " ", summary)[:1200]
+    summary_lines = _section_lines(sections, "PROFILE", "SUMMARY", "ABOUT ME", "PROFESSIONAL SUMMARY", "EXECUTIVE SUMMARY", "OBJECTIVE")
+    if summary_lines:
+        professional["summary"] = re.sub(r"\s+", " ", " ".join(summary_lines))[:1200]
 
     found: List[str] = []
     for sk in SKILL_KEYWORDS:
         if re.search(r"(?<![\w])" + re.escape(sk) + r"(?![\w])", text, re.I):
             found.append(sk)
-    skills_block = _section(text, "SKILLS|TECHNICAL SKILLS|CORE SKILLS")
-    for item in re.split(r"[,|•;\n]", skills_block):
-        item = item.strip(" -*:")
-        if 1 < len(item) <= 40 and not re.search(r"[.!?]$", item):
-            found.append(item)
+    for line in _section_lines(sections, "SKILLS", "TECHNICAL SKILLS", "CORE SKILLS"):
+        for item in re.split(r"[,|•;·]", _BULLET.sub("", line)):
+            item = item.strip(" -*:")
+            if 1 < len(item) <= 40 and not re.search(r"[.!?]$", item) and len(item.split()) <= 5:
+                found.append(item)
     skills = {"technical": [], "frameworks": [], "tools": []}
     for s in found:
         cat = "frameworks" if s.lower() in FRAMEWORK_WORDS else "tools" if s.lower() in TOOL_WORDS else "technical"
         skills[cat].append(s)
     skills = normalize_skills(skills)
 
-    certs = []
-    block = _section(text, "CERTIFICATIONS|CERTIFICATES|LICENSES")
-    for l in block.splitlines():
-        l = l.strip(" -*•")
-        if len(l) > 3:
-            certs.append(l)
+    certs = [_BULLET.sub("", l) for l in _section_lines(sections, "CERTIFICATIONS", "CERTIFICATES", "LICENSES") if len(l) > 3]
+    experience = parse_experience(_section_lines(sections, "EXPERIENCE", "WORK EXPERIENCE", "EMPLOYMENT HISTORY", "PROFESSIONAL EXPERIENCE"))
+    for e in experience:
+        y = _years_between(e.get("start_date", ""), e.get("end_date", ""))
+        if y is not None:
+            e["years"] = y
+    education = parse_education(_section_lines(sections, "EDUCATION", "ACADEMIC BACKGROUND"))
+    projects = parse_projects(_section_lines(sections, "PROJECTS", "KEY PROJECTS"))
 
     flat = flatten_skills(skills)
     if flat:
@@ -379,8 +505,12 @@ def fallback_extract(text: str) -> Dict[str, Any]:
     stated = _stated_years(text)
     if stated is not None:
         professional["experience_years"] = stated
+    elif experience:
+        total = sum(e.get("years", 0) for e in experience)
+        if total:
+            professional["experience_years"] = total
     return {"personal": personal, "professional": professional, "skills": skills if flat else {},
-            "experience": [], "education": [], "projects": [], "certifications": certs}
+            "experience": experience, "education": education, "projects": projects, "certifications": certs}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -443,7 +573,43 @@ QUESTIONS = {
 }
 
 
+def _merge_missing(primary: Dict[str, Any], extra: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill gaps in the AI result with values the quick literal read found (both come from the CV)."""
+    out = dict(primary)
+    for section in ("personal", "professional"):
+        merged = dict(extra.get(section) or {})
+        merged.update({k: v for k, v in (primary.get(section) or {}).items() if v not in (None, "", [], {})})
+        out[section] = merged
+    for section in ("experience", "education", "projects", "certifications"):
+        if not primary.get(section) and extra.get(section):
+            out[section] = extra[section]
+    if not flatten_skills(primary.get("skills") or {}) and flatten_skills(extra.get("skills") or {}):
+        out["skills"] = extra["skills"]
+    return out
+
+
 class ProfileAgent:
+    def _package(self, profile: Dict[str, Any], method: str, dropped: List[str], message: str) -> Dict[str, Any]:
+        missing = missing_fields(profile)
+        source = {"llm": "cv_ai_extraction", "quick": "cv_quick_read"}.get(method, "cv_literal_fallback")
+        return {
+            "facts": build_facts(profile, source, 0.9 if method == "llm" else 0.7),
+            "profile_data": profile,
+            "missing_fields": missing,
+            "followup_questions": [QUESTIONS[m] for m in missing if m in QUESTIONS],
+            "extraction_method": method,
+            "dropped": dropped,
+            "message": message,
+        }
+
+    def quick_extract(self, text: str) -> Dict[str, Any]:
+        """Instant literal read (no AI): fills the fields with text copied from the CV."""
+        if not text or not text.strip():
+            return self.extract_from_text(text)
+        profile = fallback_extract(text[:MAX_INPUT_CHARS])
+        run_log("info", "Quick read: fields filled with text copied from the CV (AI refinement follows)")
+        return self._package(profile, "quick", [], "")
+
     def extract_from_text(self, text: str) -> Dict[str, Any]:
         """Returns facts, profile_data, missing_fields, followup_questions, extraction_method, dropped, message."""
         if not text or not text.strip():
@@ -460,6 +626,7 @@ class ProfileAgent:
             if not isinstance(raw, dict):
                 raise ValueError("model did not return a JSON object")
             profile, dropped = ground_profile(raw, source_text)
+            profile = _merge_missing(profile, fallback_extract(source_text))
             if dropped:
                 run_warn(f"Grounding check removed {len(dropped)} value(s) not found in the CV: " + "; ".join(dropped[:5]))
             run_log("info", f"AI extraction grounded: {sum(1 for _ in build_facts(profile, 'x', 1))} facts kept, {len(dropped)} dropped")

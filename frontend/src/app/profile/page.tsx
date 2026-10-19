@@ -224,11 +224,34 @@ export default function CareerProfilePage() {
       const n = result.needs_review ?? result.facts?.length ?? 0;
       const kept = Array.isArray(result.conflicts) && result.conflicts.length
         ? ` ${result.conflicts.length} value(s) differ from facts you already confirmed — your confirmed values were kept.` : '';
-      setUploadMsg(result.extraction_method === 'fallback_partial'
-        ? `${result.message || 'AI extraction is unavailable.'} ${n} facts were copied exactly from your CV and need your review on the Confirm page.${kept}`
-        : `Your CV was read by the AI: ${n} facts need your review on the Confirm page before they count as verified.${kept}`);
+      setUploadMsg(result.refining
+        ? `Your CV was read and saved: ${n} facts copied exactly from it need your review. The AI is refining them in the background — this page updates by itself.${kept}`
+        : result.extraction_method === 'fallback_partial'
+          ? `${result.message || 'AI extraction is unavailable.'} ${n} facts were copied exactly from your CV and need your review on the Confirm page.${kept}`
+          : `Your CV was read by the AI: ${n} facts need your review on the Confirm page before they count as verified.${kept}`);
       setUploadFile(null);
       await loadProfile();
+      if (result.refine_job_id) {
+        (async () => {
+          const started = Date.now();
+          while (Date.now() - started < 5 * 60 * 1000) {
+            await new Promise((r) => setTimeout(r, 2500));
+            try {
+              const ref = await apiFetch(`/documents/refine/${result.refine_job_id}`);
+              if (ref.status === 'running') continue;
+              if (ref.status === 'done') {
+                await loadProfile();
+                setUploadMsg(`AI refinement finished: your profile was updated (${ref.needs_review ?? ref.facts?.length ?? 0} facts need your review).`);
+              } else {
+                setUploadMsg(`AI refinement was not available (${ref.error || 'unknown reason'}). Your profile keeps the details copied exactly from your CV.`);
+              }
+              return;
+            } catch {
+              /* keep polling */
+            }
+          }
+        })();
+      }
     } catch (err: any) {
       setUploadMsg(`Upload failed: ${err.message || err}`);
     } finally {
