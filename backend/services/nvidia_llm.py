@@ -262,3 +262,35 @@ def call_nvidia_json(
     raw = call_nvidia_llm(prompt, system_prompt=system, temperature=temperature, max_tokens=max_tokens,
                           model_override=model_override, timeout=timeout, json_mode=True)
     return parse_json_response(raw)
+
+
+# ---------------------------------------------------------------------------------------------
+# Vision (reading text from page images, e.g. design-tool / scanned CV PDFs)
+# ---------------------------------------------------------------------------------------------
+DEFAULT_VISION_MODEL = "meta/llama-3.2-11b-vision-instruct"
+VISION_TIMEOUT = 120.0
+OCR_PROMPT = ("Transcribe ALL text in this CV page exactly as written, line by line, top to bottom, "
+              "left column before right column. Keep names, emails, phone numbers, dates and links exactly. "
+              "Do not add, explain, summarise or translate anything. Output only the transcribed text.")
+
+
+def get_vision_model() -> str:
+    return (os.getenv("NVIDIA_VISION_MODEL") or DEFAULT_VISION_MODEL).strip()
+
+
+def call_nvidia_vision_ocr(image_b64_jpeg: str, page_label: str = "page", max_tokens: int = 1500,
+                           timeout: Optional[float] = None) -> str:
+    """Transcribe the text in one page image (base64 JPEG). Raises LLMUnavailableError / LLMResponseError."""
+    api_key = get_nvidia_api_key()
+    if not api_key:
+        raise LLMUnavailableError("NVIDIA API key is not configured (OPENAI_API_KEY in backend/.env)")
+    model = get_vision_model()
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": OCR_PROMPT},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64_jpeg}"}},
+    ]}]
+    with tool_call(f"nvidia-vision:{model}", f"read text from {page_label}") as t:
+        text = _complete(model, messages, 0.0, max_tokens, timeout or VISION_TIMEOUT, api_key,
+                         get_nvidia_base_url(), False)
+        t["summary"] = f"{page_label}: {len(text)} characters read"
+    return text

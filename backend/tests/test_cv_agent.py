@@ -262,3 +262,46 @@ def test_save_version_keeps_the_editor_content():
     assert "My own edited summary." in json.dumps(listed)
     pdf = client.get(f"/resumes/{res['id']}/export/pdf", headers=headers)
     assert pdf.status_code == 200 and pdf.content[:4] == b"%PDF"
+
+
+# ---------------- reading PDFs made in design tools / scans ----------------
+
+def _image_only_pdf():
+    import pymupdf
+    doc = pymupdf.open(); page = doc.new_page()
+    page.insert_text((72, 72), "Jordan Avery\nSenior Data Engineer\njordan.avery@example.com")
+    pix = page.get_pixmap(dpi=100)
+    out = pymupdf.open(); p2 = out.new_page(); p2.insert_image(p2.rect, stream=pix.tobytes("png"))
+    return out.tobytes()
+
+
+def test_image_only_pdf_is_read_with_the_vision_model():
+    pytest.importorskip("pymupdf")
+    from backend.services import document_service as ds
+    pdf = _image_only_pdf()
+    assert ds._pdf_text_pdfminer(pdf) == "" and ds._pdf_text_pymupdf(pdf) == ""
+    with mock.patch.object(nvidia_llm, "call_nvidia_vision_ocr", return_value=CV) as vision:
+        text = ds.extract_text_from_file_bytes(pdf, "Designed CV.pdf")
+    assert vision.call_count == 1 and "Jordan Avery" in text
+    img = ds._pdf_page_images(pdf)[0]
+    assert len(img) < 180_000  # NVIDIA inline image limit
+
+
+def test_unreadable_pdf_returns_no_text_instead_of_raw_bytes():
+    from backend.services import document_service as ds
+    with mock.patch.object(nvidia_llm, "call_nvidia_vision_ocr", side_effect=AssertionError("no pages to read")):
+        assert ds.extract_text_from_file_bytes(b"%PDF-1.4 broken \x00\x01\x02", "broken.pdf") == ""
+
+
+def test_upload_of_image_only_pdf_extracts_profile_via_vision():
+    pytest.importorskip("pymupdf")
+    uid, headers = _user()
+    with mock.patch.object(nvidia_llm, "call_nvidia_vision_ocr", return_value=CV), \
+         mock.patch.object(pa, "call_nvidia_json", return_value=json.loads(json.dumps(LLM_OUTPUT))):
+        r = client.post("/documents/parse", headers=headers, files={"file": ("cv.pdf", _image_only_pdf(), "application/pdf")})
+    assert r.status_code == 200 and r.json()["extraction_method"] == "llm"
+    assert r.json()["profile_data"]["personal"]["name"] == "Jordan Avery"
+    snap = client.get("/agent-runs/snapshot?range=1h", headers=headers).json()
+    run = snap["runs"][0]
+    assert any(t["name"].startswith("parser:pdf") for t in run["tool_calls"])
+    assert any("vision model" in l["message"] for l in run["logs"])
