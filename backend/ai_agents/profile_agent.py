@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 MAX_TOKENS = 4000
 MAX_INPUT_CHARS = 24000
 
+
+def extraction_timeout() -> float:
+    """A whole CV (often OCR text) takes longer than a short chat call: own limit, default 120 s."""
+    import os
+    try:
+        return max(30.0, float(os.getenv("NVIDIA_EXTRACTION_TIMEOUT", "120")))
+    except ValueError:
+        return 120.0
+
 SYSTEM_PROMPT = """You extract a structured career profile from a CV or professional bio.
 
 Rules:
@@ -446,7 +455,8 @@ class ProfileAgent:
         method, message = "llm", ""
         try:
             raw = call_nvidia_json(f"Extract the career profile from this CV text:\n\n<cv>\n{source_text}\n</cv>",
-                                   system_prompt=SYSTEM_PROMPT, temperature=0.0, max_tokens=MAX_TOKENS)
+                                   system_prompt=SYSTEM_PROMPT, temperature=0.0, max_tokens=MAX_TOKENS,
+                                   timeout=extraction_timeout())
             if not isinstance(raw, dict):
                 raise ValueError("model did not return a JSON object")
             profile, dropped = ground_profile(raw, source_text)
