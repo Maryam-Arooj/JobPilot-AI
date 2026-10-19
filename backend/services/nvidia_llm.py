@@ -180,6 +180,11 @@ def _complete(model: str, messages: list, temperature: float, max_tokens: int,
             raise LLMResponseError(
                 f"NVIDIA model {model} returned no content (finish_reason={choice.get('finish_reason')!r})"
             )
+        if json_mode and choice.get("finish_reason") == "length":
+            # Truncated JSON is never usable: report it instead of parsing half an answer.
+            raise LLMResponseError(
+                f"NVIDIA model {model} stopped at max_tokens={max_tokens}; the JSON answer was cut off"
+            )
         return content
     raise LLMUnavailableError(f"NVIDIA model {model} failed after retry")  # pragma: no cover
 

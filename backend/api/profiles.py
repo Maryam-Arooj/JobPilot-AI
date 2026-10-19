@@ -84,17 +84,34 @@ def update_my_profile(
         profile = CareerProfile(user_id=user_id)
         db.add(profile)
 
-    # Update only provided fields
+    # Merge, don't replace: keys the form does not send (e.g. headline, linkedin) are kept.
+    # A key sent as "" or null clears that field.
+    def _merge(current, incoming):
+        merged = dict(current or {})
+        for k, v in (incoming or {}).items():
+            if v is None or v == "" or v == []:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+        return merged
+
     if data.personal is not None:
-        profile.personal = data.personal
+        profile.personal = _merge(profile.personal, data.personal)
     if data.professional is not None:
-        profile.professional = data.professional
+        profile.professional = _merge(profile.professional, data.professional)
+        if isinstance(data.professional.get("skills"), list):
+            # the edited list becomes the single source of skills (no duplicate categories)
+            from ..ai_agents.profile_agent import normalize_skills, flatten_skills
+            profile.skills = normalize_skills({"technical": data.professional["skills"]})
+            prof = dict(profile.professional); prof["skills"] = flatten_skills(profile.skills)
+            profile.professional = prof
     if hasattr(data, 'education') and data.education is not None:
         profile.education = data.education
     if hasattr(data, 'experience') and data.experience is not None:
         profile.experience = data.experience
     if hasattr(data, 'skills') and data.skills is not None:
-        profile.skills = data.skills
+        from ..ai_agents.profile_agent import normalize_skills
+        profile.skills = normalize_skills(data.skills)
     if hasattr(data, 'projects') and data.projects is not None:
         profile.projects = data.projects
     if hasattr(data, 'certifications') and data.certifications is not None:

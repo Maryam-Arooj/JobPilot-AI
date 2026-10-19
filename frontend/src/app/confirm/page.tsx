@@ -180,86 +180,35 @@ export default function DocumentConfirmationPage() {
         }));
 
         setFacts(newFacts);
-        setMessage({
-          type: 'success',
-          text: `Parsed "${resData.filename || file.name}" successfully! Extracted ${newFacts.length} granular profile facts. Review, edit, and click "Confirm & Sync All to Profile" below.`
-        });
+        const dropped = Array.isArray(resData.dropped) ? resData.dropped.length : 0;
+        const missing = Array.isArray(resData.missing_fields) ? resData.missing_fields : [];
+        const missingText = missing.length ? ` Not found in the CV: ${missing.join(', ')}.` : '';
+        if (resData.extraction_method === 'fallback_partial') {
+          setMessage({
+            type: 'info',
+            text: `${resData.message || 'AI extraction is unavailable right now.'} ${newFacts.length} facts were copied exactly from "${resData.filename || file.name}".${missingText}`
+          });
+        } else if (resData.extraction_method === 'none' || newFacts.length === 0) {
+          setMessage({
+            type: 'error',
+            text: `No profile facts could be read from "${resData.filename || file.name}". If it is a scanned image, upload a text-based PDF or DOCX instead.`
+          });
+        } else {
+          setMessage({
+            type: 'success',
+            text: `AI read "${resData.filename || file.name}": ${newFacts.length} facts need your review.${dropped ? ` ${dropped} value(s) the AI suggested were removed because they are not in your CV.` : ''}${missingText} Edit or reject anything wrong, then click "Confirm & Sync All to Profile".`
+          });
+        }
       }
     } catch (err: any) {
       console.error('File parse error:', err);
       setMessage({
         type: 'error',
-        text: `Document parse error: ${err.message || 'Could not parse document'}. Try again or load sample data.`
+        text: `Document parse error: ${err.message || 'Could not parse document'}. Try again with a text-based PDF, DOCX or TXT file.`
       });
     } finally {
       setIsUploading(false);
     }
-  };
-
-  const handleSampleCV = () => {
-    const sampleProfile: ParsedProfileData = {
-      personal: {
-        name: 'Sample Candidate',
-        email: 'sample.candidate@example.com',
-        phone: '+00 000 0000000',
-        location: 'Sample City, Country',
-        linkedin: 'linkedin.com/in/sample-candidate',
-        github: 'github.com/sample-candidate'
-      },
-      professional: {
-        headline: 'Agentic AI Engineer & Full Stack Developer',
-        summary: 'I build production AI systems that solve and automate real business problems: intelligent assistants that manage complete customer conversations, multi-agent platforms that run daily operations, and RAG pipelines whose answers teams can trust.',
-        experience_years: 3
-      },
-      skills: {
-        technical: ['Python', 'FastAPI', 'Next.js', 'React', 'TypeScript', 'PostgreSQL', 'Docker', 'LangChain', 'LlamaIndex', 'CrewAI', 'AutoGen', 'ChromaDB'],
-        frameworks: ['FastAPI', 'Next.js', 'React', 'LangChain'],
-        tools: ['Docker', 'Git', 'PostgreSQL', 'ChromaDB', 'Linux']
-      },
-      experience: [
-        {
-          company: 'AI Solutions Lab',
-          title: 'Senior Agentic AI Engineer',
-          years: 2,
-          description: 'Architected and deployed multi-agent automation systems and RAG pipelines with 98% accuracy for enterprise clients.'
-        }
-      ],
-      education: [
-        {
-          institution: 'National University of Computer and Emerging Sciences',
-          degree: 'B.S. in Computer Science',
-          year: '2023'
-        }
-      ],
-      certifications: [
-        'Certified Kubernetes Application Developer (CKAD)',
-        'AWS Certified Solutions Architect',
-        'DeepLearning.AI Generative AI Specialist'
-      ]
-    };
-
-    setParsedDocName('Sample_AI_Engineer_CV.pdf');
-    setParsedProfile(sampleProfile);
-
-    const sampleFacts: ExtractedFact[] = [
-      { id: 's_1', path: 'personal.name', field: 'Candidate Name', value: 'Sample Candidate', source: 'Sample_CV.pdf', confidence: 0.98, verified: false, category: 'personal' },
-      { id: 's_2', path: 'professional.headline', field: 'Headline / Role', value: 'Agentic AI Engineer & Full Stack Developer', source: 'Sample_CV.pdf', confidence: 0.95, verified: false, category: 'professional' },
-      { id: 's_3', path: 'personal.email', field: 'Email Address', value: 'sample.candidate@example.com', source: 'Sample_CV.pdf', confidence: 0.99, verified: false, category: 'personal' },
-      { id: 's_4', path: 'personal.phone', field: 'Phone', value: '+00 000 0000000', source: 'Sample_CV.pdf', confidence: 0.95, verified: false, category: 'personal' },
-      { id: 's_5', path: 'personal.location', field: 'Location', value: 'Sample City, Country', source: 'Sample_CV.pdf', confidence: 0.92, verified: false, category: 'personal' },
-      { id: 's_6', path: 'personal.linkedin', field: 'LinkedIn Profile', value: 'linkedin.com/in/sample-candidate', source: 'Sample_CV.pdf', confidence: 0.95, verified: false, category: 'personal' },
-      { id: 's_7', path: 'professional.summary', field: 'Executive Summary', value: sampleProfile.professional?.summary, source: 'Sample_CV.pdf', confidence: 0.92, verified: false, category: 'professional' },
-      { id: 's_8', path: 'skills', field: 'Technical Skills', value: ['Python', 'FastAPI', 'Next.js', 'React', 'TypeScript', 'PostgreSQL', 'Docker', 'LangChain', 'LlamaIndex', 'CrewAI', 'AutoGen'], source: 'Sample_CV.pdf', confidence: 0.96, verified: false, category: 'skills' },
-      { id: 's_9', path: 'certifications', field: 'Certifications', value: sampleProfile.certifications, source: 'Sample_CV.pdf', confidence: 0.95, verified: false, category: 'certifications' },
-      { id: 's_10', path: 'experience[0]', field: 'Work Experience', value: 'Senior Agentic AI Engineer at AI Solutions Lab', source: 'Sample_CV.pdf', confidence: 0.90, verified: false, category: 'experience' },
-      { id: 's_11', path: 'education[0]', field: 'Education', value: 'B.S. in Computer Science - FAST NUCES (2023)', source: 'Sample_CV.pdf', confidence: 0.92, verified: false, category: 'education' },
-    ];
-
-    setFacts(sampleFacts);
-    setMessage({
-      type: 'info',
-      text: 'Loaded a fictional sample CV for testing the review flow. Do not sync it to your profile unless you want test data in it.'
-    });
   };
 
   const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -422,14 +371,6 @@ export default function DocumentConfirmationPage() {
           </div>
 
           <div className="flex items-center gap-3">
-            <button
-              onClick={handleSampleCV}
-              className="px-3 py-1.5 rounded-lg bg-surface border border-line hover:border-accent/60 text-fg font-mono text-xs transition-colors flex items-center gap-1.5 shadow-xs"
-              title="Fills the review screen with fictional test data"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-fg" />
-              <span>Load sample CV (fictional)</span>
-            </button>
             <button
               onClick={loadFactsAndProfile}
               className="p-2 rounded-lg bg-surface border border-line text-muted hover:text-fg shadow-xs"
@@ -728,7 +669,7 @@ export default function DocumentConfirmationPage() {
             <div className="p-10 text-center text-xs text-muted font-mono border border-dashed border-line rounded-xl space-y-2">
               <FileText className="w-8 h-8 text-subtle mx-auto" />
               <div>No facts found for "{activeCategory}".</div>
-              <p className="text-[11px] text-subtle">Upload a CV document or click "Load Sample AI Engineer CV" above.</p>
+              <p className="text-[11px] text-subtle">Upload your CV above to extract facts for review.</p>
             </div>
           )}
         </div>

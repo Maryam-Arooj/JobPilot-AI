@@ -100,6 +100,31 @@ def generate_resume(
         if not resume:
             raise HTTPException(status_code=404, detail="Resume not found")
 
+        target_role = data.target_role or resume.target_role
+        template = data.template or resume.template
+        custom = data.custom_content or {}
+        has_custom = any(custom.get(k) for k in ("summary", "experience", "education", "skills", "name", "title"))
+        if has_custom:
+            # Save Version: keep exactly what the user edited in Resume Studio.
+            run.step("Save edited resume", 1, 1)
+            doc = {**custom, "template": template, "target_role": target_role, "source": "resume_studio_edit"}
+            doc.pop("custom_content", None)
+            latest = (db.query(ResumeVersion).filter(ResumeVersion.resume_id == resume.id)
+                      .order_by(ResumeVersion.version_number.desc()).first())
+            next_version = (latest.version_number + 1) if latest else 1
+            version = ResumeVersion(resume_id=resume.id, version_number=next_version, target_role=target_role,
+                                    content_snapshot=doc, source_profile_version="editor", status="draft")
+            db.add(version)
+            resume.approved = True
+            resume.template = template
+            if target_role:
+                resume.target_role = target_role
+            db.commit()
+            db.refresh(version)
+            run.set_output({"version_number": next_version, "template": template, "source": "editor"})
+            return {"version_id": version.id, "version_number": next_version, "content_snapshot": doc,
+                    "template": template, "target_role": target_role}
+
         profile = db.query(CareerProfile).filter(CareerProfile.id == resume.career_profile_id).first()
         if not profile:
             raise HTTPException(status_code=404, detail="Career profile not found")

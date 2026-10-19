@@ -34,16 +34,20 @@ def extract_text_from_file_bytes(file_bytes: bytes, filename: str) -> str:
         logger.error(f"Error extracting text from {filename}: {e}")
         return file_bytes.decode('utf-8', errors='ignore').strip()
 
-def extract_facts_from_bytes(file_bytes: bytes, filename: str) -> Dict[str, Any]:
-    """Extract full structured profile and facts from uploaded document bytes."""
+def extract_text_and_profile(file_bytes: bytes, filename: str):
+    """Read the document once, then run the CV Agent. Returns (text, extraction)."""
     kind = (filename.rsplit(".", 1)[-1] if "." in filename else "text").lower()
     with tool_call(f"parser:{kind}", f"extract text from {filename}") as t:
         text = extract_text_from_file_bytes(file_bytes, filename)
         t["summary"] = f"{len(text)} characters of text extracted"
     if not text.strip():
         run_warn("No text could be extracted from the document (scanned image or empty file?)")
-    agent = ProfileAgent()
-    return agent.extract_from_text(text)
+    return text, ProfileAgent().extract_from_text(text)
+
+
+def extract_facts_from_bytes(file_bytes: bytes, filename: str) -> Dict[str, Any]:
+    """Extract full structured profile and facts from uploaded document bytes."""
+    return extract_text_and_profile(file_bytes, filename)[1]
 
 def confirm_facts(facts: List[Dict], approvals: Dict[str, bool]) -> List[Dict]:
     confirmed = []

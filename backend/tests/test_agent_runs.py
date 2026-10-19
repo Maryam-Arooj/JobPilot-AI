@@ -238,7 +238,7 @@ def test_nvidia_calls_are_recorded_as_tool_calls_with_fallback_warning(monkeypat
 def test_profile_extract_endpoint_is_tracked_and_reports_fallback():
     uid, headers = _user()
     from backend.services.nvidia_llm import LLMUnavailableError
-    with mock.patch("backend.ai_agents.profile_agent.call_nvidia_llm",
+    with mock.patch("backend.ai_agents.profile_agent.call_nvidia_json",
                     side_effect=LLMUnavailableError("NVIDIA model x timed out after 45s")):
         r = client.post("/profiles/me/extract", headers=headers,
                         json={"text": "Jordan Avery\njordan@example.com\nSkills: Python, SQL", "auto_save": True})
@@ -248,7 +248,7 @@ def test_profile_extract_endpoint_is_tracked_and_reports_fallback():
     assert cv_run["task"] == "Extract career profile from text"
     assert cv_run["status"] == "success"
     steps = [e["detail"] for e in cv_run["events"] if e["type"] == "step"]
-    assert steps == ["Step 1/2: AI extraction", "Step 2/2: Save profile"]
-    assert any("pattern-matching fallback" in l["message"] for l in cv_run["logs"])
+    assert steps == ["Step 1/2: AI extraction and grounding check", "Step 2/2: Save profile (facts need your review)"]
+    assert any("AI extraction unavailable" in l["message"] for l in cv_run["logs"])
     assert cv_run["input"]["text_chars"] > 0 and "jordan@example.com" not in json.dumps(cv_run["input"])
     assert any(t["title"] == "Warning" for t in snap["timeline"])

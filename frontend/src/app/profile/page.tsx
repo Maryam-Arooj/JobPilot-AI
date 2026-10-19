@@ -72,6 +72,20 @@ interface ProfileData {
   }>;
 }
 
+/** Skills from professional.skills or the categorised skills object, each once (case-insensitive). */
+function uniqueSkills(data: any): string[] {
+  const raw: string[] = [];
+  const prof = data?.professional?.skills;
+  if (Array.isArray(prof) && prof.length > 0) raw.push(...prof.map(String));
+  else if (data?.skills && typeof data.skills === 'object') {
+    Object.values(data.skills as Record<string, unknown>).forEach(v => {
+      if (Array.isArray(v)) raw.push(...v.map(String));
+    });
+  }
+  const seen = new Set<string>();
+  return raw.map(s => s.trim()).filter(s => s && !seen.has(s.toLowerCase()) && (seen.add(s.toLowerCase()), true));
+}
+
 export default function CareerProfilePage() {
   const router = useRouter();
   // JWT lives in localStorage, so the auth check has to run client-side.
@@ -116,23 +130,13 @@ export default function CareerProfilePage() {
       setPhone(data.personal?.phone || '');
       setLocation(data.personal?.location || '');
       setTargetRole(data.professional?.target_role || '');
-      setYearsExp(String(data.professional?.years_of_experience || ''));
-      setLinkedin(data.professional?.linkedin || '');
-      setGithub(data.professional?.github || '');
+      setYearsExp(String(data.professional?.years_of_experience || data.professional?.experience_years || ''));
+      // CV extraction stores links under personal; older edits stored them under professional.
+      setLinkedin(data.personal?.linkedin || data.professional?.linkedin || '');
+      setGithub(data.personal?.github || data.professional?.github || '');
 
       // Extract skills — handle both array and object formats
-      const profSkills = data.professional?.skills;
-      if (Array.isArray(profSkills)) {
-        setSkillsStr(profSkills.join(', '));
-      } else if (data.skills && typeof data.skills === 'object') {
-        const allSkills: string[] = [];
-        Object.values(data.skills as Record<string, string[]>).forEach(v => {
-          if (Array.isArray(v)) allSkills.push(...v);
-        });
-        setSkillsStr(allSkills.join(', '));
-      } else {
-        setSkillsStr('');
-      }
+      setSkillsStr(uniqueSkills(data).join(', '));
 
       // Extract certifications
       if (Array.isArray(data.certifications)) {
@@ -173,20 +177,24 @@ export default function CareerProfilePage() {
 
       const updated = await apiFetch('/profiles/me', {
         method: 'PUT',
+        // The backend merges these into the saved profile: fields the form doesn't show (headline,
+        // experience, education…) are kept, and a field left empty here is cleared.
         body: JSON.stringify({
           personal: {
-            name: name || undefined,
-            email: email || undefined,
-            phone: phone || undefined,
-            location: location || undefined,
+            name: name.trim(),
+            email: email.trim(),
+            phone: phone.trim(),
+            location: location.trim(),
+            linkedin: linkedin.trim(),
+            github: github.trim(),
           },
           professional: {
-            target_role: targetRole || undefined,
-            years_of_experience: yearsExp ? Number(yearsExp) : undefined,
-            skills: skillsArray.length > 0 ? skillsArray : undefined,
-            summary: summary || undefined,
-            linkedin: linkedin || undefined,
-            github: github || undefined,
+            target_role: targetRole.trim(),
+            years_of_experience: yearsExp ? Number(yearsExp) : '',
+            skills: skillsArray,
+            summary: summary.trim(),
+            linkedin: '',
+            github: '',
           },
           certifications: certsArray.length > 0 ? certsArray : undefined,
         }),
@@ -213,7 +221,12 @@ export default function CareerProfilePage() {
         method: 'POST',
         body: formData,
       });
-      setUploadMsg(`Document parsed successfully! Extracted ${result.facts?.length || 0} facts. Refresh to see updates.`);
+      const n = result.needs_review ?? result.facts?.length ?? 0;
+      const kept = Array.isArray(result.conflicts) && result.conflicts.length
+        ? ` ${result.conflicts.length} value(s) differ from facts you already confirmed — your confirmed values were kept.` : '';
+      setUploadMsg(result.extraction_method === 'fallback_partial'
+        ? `${result.message || 'AI extraction is unavailable.'} ${n} facts were copied exactly from your CV and need your review on the Confirm page.${kept}`
+        : `Your CV was read by the AI: ${n} facts need your review on the Confirm page before they count as verified.${kept}`);
       setUploadFile(null);
       await loadProfile();
     } catch (err: any) {
@@ -223,19 +236,7 @@ export default function CareerProfilePage() {
     }
   };
 
-  const getSkillsDisplay = (): string[] => {
-    if (!profile) return [];
-    const profSkills = profile.professional?.skills;
-    if (Array.isArray(profSkills) && profSkills.length > 0) return profSkills;
-    if (profile.skills && typeof profile.skills === 'object') {
-      const all: string[] = [];
-      Object.values(profile.skills as Record<string, string[]>).forEach(v => {
-        if (Array.isArray(v)) all.push(...v);
-      });
-      return all;
-    }
-    return [];
-  };
+  const getSkillsDisplay = (): string[] => (profile ? uniqueSkills(profile) : []);
 
   const skills = getSkillsDisplay();
   const isProfileEmpty = !profile?.personal?.name && !profile?.professional?.target_role;
@@ -560,6 +561,9 @@ export default function CareerProfilePage() {
           {uploadMsg && (
             <div className={`p-3 rounded-lg text-xs ${uploadMsg.includes('failed') ? 'bg-bad-soft border border-bad/30 text-bad' : 'bg-ok-soft border border-ok/30 text-ok'}`}>
               {uploadMsg}
+              {!uploadMsg.includes('failed') && (
+                <a href="/confirm" className="ml-1 font-semibold underline">Review facts now</a>
+              )}
             </div>
           )}
         </div>

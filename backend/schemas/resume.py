@@ -32,6 +32,9 @@ class ResumeCreate(BaseModel):
 class ResumeGenerate(BaseModel):
     target_role: Optional[str] = None
     template: Optional[str] = None
+    # The Resume Studio editor's current CV. When given, it is saved as-is (the user's edits);
+    # otherwise the resume is built from the career profile.
+    custom_content: Optional[Dict[str, Any]] = None
 
 class ResumeUpdate(BaseModel):
     content_snapshot: ResumeDocumentSchema

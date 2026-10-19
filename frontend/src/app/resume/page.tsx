@@ -134,17 +134,18 @@ const mapEducation = (list: any[]) => list.map((ed: any) => ({
   year: ed.year || ed.end_year ? String(ed.year || ed.end_year) : ''
 }));
 
+// Each skill once (case-insensitive): profiles may store the same skill in several categories.
 const flattenSkills = (skills: any): string[] => {
-  if (Array.isArray(skills)) return skills.map(String);
-  if (skills && typeof skills === 'object') {
-    const flattened: string[] = [];
+  const flattened: string[] = [];
+  if (Array.isArray(skills)) flattened.push(...skills.map(String));
+  else if (skills && typeof skills === 'object') {
     Object.values(skills).forEach((v: any) => {
-      if (Array.isArray(v)) flattened.push(...v);
+      if (Array.isArray(v)) flattened.push(...v.map(String));
       else if (typeof v === 'string') flattened.push(v);
     });
-    return flattened;
   }
-  return [];
+  const seen = new Set<string>();
+  return flattened.map(s => s.trim()).filter(s => s && !seen.has(s.toLowerCase()) && (seen.add(s.toLowerCase()), true));
 };
 
 const mapCertifications = (list: any[]) =>
@@ -265,7 +266,9 @@ export default function ResumeStudioPage() {
           : base.education;
 
         let skillList = base.skills;
-        const flattened = flattenSkills(profile.skills);
+        const flattened = flattenSkills(
+          Array.isArray(profObj.skills) && profObj.skills.length > 0 ? profObj.skills : profile.skills
+        );
         if (flattened.length > 0) skillList = flattened;
 
         const certList = Array.isArray(profile.certifications)
