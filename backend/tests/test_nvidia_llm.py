@@ -211,3 +211,68 @@ def test_call_nvidia_json_invalid_raises():
     with mock.patch.object(llm.requests, "post", return_value=resp(content="not json at all {broken")):
         with pytest.raises(LLMResponseError):
             llm.call_nvidia_json("x")
+
+
+# ---------------- Gemini as primary provider, NVIDIA as fallback ----------------
+
+def _resp(status, content="ok", finish="stop"):
+    r = mock.Mock(status_code=status, headers={})
+    r.json.return_value = {"choices": [{"finish_reason": finish, "message": {"content": content}}]}
+    r.text = "error"
+    return r
+
+
+def test_gemini_is_tried_first_when_its_key_is_set(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "nvapi-test")
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-test-flash")
+    monkeypatch.setenv("NVIDIA_MODEL", "nv/model")
+    monkeypatch.delenv("NVIDIA_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    calls = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        calls.append((url, json["model"], headers["Authorization"]))
+        return _resp(200, "from gemini")
+    with mock.patch.object(llm.requests, "post", side_effect=post):
+        assert llm.call_nvidia_llm("hi") == "from gemini"
+    assert calls[0][0].startswith(llm.GEMINI_BASE_URL) and calls[0][1] == "gemini-test-flash"
+    assert calls[0][2] == "Bearer gem-test-key"
+
+
+def test_falls_back_to_nvidia_when_gemini_fails(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "nvapi-test")
+    monkeypatch.setenv("NVIDIA_MODEL", "nv/model")
+    monkeypatch.delenv("NVIDIA_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("GEMINI_FALLBACK_MODEL", raising=False)
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    seen = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        seen.append(json["model"])
+        return _resp(503) if "generativelanguage" in url else _resp(200, "from nvidia")
+    with mock.patch.object(llm.requests, "post", side_effect=post), mock.patch.object(llm.time, "sleep"):
+        assert llm.call_nvidia_llm("hi") == "from nvidia"
+    assert seen[-1] == "nv/model"
+
+
+def test_optional_fields_are_dropped_after_http_400(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-test-key")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_REASONING_EFFORT", "low")
+    bodies = []
+
+    def post(url, json=None, headers=None, timeout=None):
+        bodies.append(dict(json))
+        return _resp(400) if "reasoning_effort" in json else _resp(200, "fine")
+    with mock.patch.object(llm.requests, "post", side_effect=post):
+        assert llm.call_nvidia_llm("hi") == "fine"
+    assert "reasoning_effort" in bodies[0] and "reasoning_effort" not in bodies[1]
+
+
+def test_llm_provider_nvidia_puts_nvidia_first(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-test-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "nvapi-test")
+    monkeypatch.setenv("LLM_PROVIDER", "nvidia")
+    assert llm.get_targets()[0][0] == "nvidia"

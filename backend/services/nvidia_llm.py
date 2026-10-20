@@ -56,6 +56,12 @@ MODEL_EXTRAS: Dict[str, Dict[str, Any]] = {
     "nvidia/nemotron-3.5-lightning-30b-a3b": {"chat_template_kwargs": {"enable_thinking": False}},
     "nvidia/nemotron-3-super-120b-a12b": {"chat_template_kwargs": {"enable_thinking": False}},
 }
+# Google Gemini through its OpenAI-compatible endpoint (https://ai.google.dev/gemini-api/docs/openai).
+# If GEMINI_API_KEY is set, Gemini is tried first and NVIDIA is the automatic fallback
+# (LLM_PROVIDER=nvidia reverses the order). Gemini Flash answers CV-sized JSON in seconds.
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+
 # Models verified to accept response_format={"type": "json_object"}; used by call_nvidia_json only.
 JSON_OBJECT_MODELS = {"nvidia/nemotron-3.5-lightning-30b-a3b", "nvidia/nemotron-3-super-120b-a12b"}
 
@@ -92,6 +98,37 @@ def get_models() -> List[str]:
     primary = (os.getenv("NVIDIA_MODEL") or DEFAULT_MODEL).strip()
     fallback = (os.getenv("NVIDIA_FALLBACK_MODEL") or "").strip()
     return [primary] + ([fallback] if fallback and fallback != primary else [])
+
+
+def get_gemini_api_key() -> str:
+    return os.getenv("GEMINI_API_KEY", "").strip()
+
+
+def get_gemini_models() -> List[str]:
+    primary = (os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL).strip()
+    fallback = (os.getenv("GEMINI_FALLBACK_MODEL") or "").strip()
+    return [primary] + ([fallback] if fallback and fallback != primary else [])
+
+
+def _gemini_timeout() -> float:
+    try:
+        return max(5.0, float(os.getenv("GEMINI_TIMEOUT", "40")))
+    except ValueError:
+        return 40.0
+
+
+def get_targets(model_override: Optional[str] = None) -> List[tuple]:
+    """Ordered (provider, model, base_url, api_key) to try. Gemini first when its key is set."""
+    gkey, nkey = get_gemini_api_key(), get_nvidia_api_key()
+    if model_override:
+        if model_override.startswith("gemini") and gkey:
+            return [("gemini", model_override, GEMINI_BASE_URL, gkey)]
+        return [("nvidia", model_override, get_nvidia_base_url(), nkey)] if nkey else []
+    gemini = [("gemini", m, GEMINI_BASE_URL, gkey) for m in get_gemini_models()] if gkey else []
+    nvidia = [("nvidia", m, get_nvidia_base_url(), nkey) for m in get_models()] if nkey else []
+    if os.getenv("LLM_PROVIDER", "").strip().lower() == "nvidia":
+        return nvidia + gemini
+    return gemini + nvidia
 
 
 def get_extra_body(model: str) -> Dict[str, Any]:
@@ -141,14 +178,21 @@ def _retry_delay(resp: requests.Response) -> float:
 
 
 def _complete(model: str, messages: list, temperature: float, max_tokens: int,
-              timeout: float, api_key: str, base_url: str, json_mode: bool = False) -> str:
-    """One model: a single request, retried once on 429/5xx."""
-    extras = get_extra_body(model)
-    if json_mode and model in JSON_OBJECT_MODELS:
-        extras.setdefault("response_format", {"type": "json_object"})
+              timeout: float, api_key: str, base_url: str, json_mode: bool = False,
+              provider: str = "nvidia") -> str:
+    """One model: a single request, retried once on 429/5xx (and once without extras on HTTP 400)."""
+    label = "Gemini" if provider == "gemini" else "NVIDIA"
+    if provider == "gemini":
+        effort = os.getenv("GEMINI_REASONING_EFFORT", "low").strip()
+        extras = {"reasoning_effort": effort} if effort and effort.lower() != "default" else {}
+    else:
+        extras = get_extra_body(model)
+        if json_mode and model in JSON_OBJECT_MODELS:
+            extras.setdefault("response_format", {"type": "json_object"})
     body = {"temperature": temperature, "max_tokens": max_tokens, **extras,
             "model": model, "messages": messages}
-    for attempt in (1, 2):
+    dropped_extras = False
+    for attempt in (1, 2, 3):
         try:
             resp = requests.post(
                 f"{base_url}/chat/completions",
@@ -157,36 +201,42 @@ def _complete(model: str, messages: list, temperature: float, max_tokens: int,
                 timeout=timeout,
             )
         except requests.Timeout:
-            raise LLMUnavailableError(f"NVIDIA model {model} timed out after {timeout:.0f}s")
+            raise LLMUnavailableError(f"{label} model {model} timed out after {timeout:.0f}s")
         except requests.RequestException as e:
             # str(e) contains the request URL; log the type only.
-            raise LLMUnavailableError(f"NVIDIA model {model} could not be reached ({type(e).__name__})")
+            raise LLMUnavailableError(f"{label} model {model} could not be reached ({type(e).__name__})")
 
+        if resp.status_code == 400 and extras and not dropped_extras:
+            # an optional field (e.g. reasoning_effort) was rejected: retry with the core request only
+            logger.warning("%s model %s rejected optional fields %s; retrying without them", label, model, list(extras))
+            body = {k: v for k, v in body.items() if k not in extras}
+            dropped_extras = True
+            continue
         if resp.status_code in RETRY_STATUSES and attempt == 1:
             delay = _retry_delay(resp)
-            logger.warning("NVIDIA model %s returned HTTP %s; retrying in %.1fs", model, resp.status_code, delay)
+            logger.warning("%s model %s returned HTTP %s; retrying in %.1fs", label, model, resp.status_code, delay)
             time.sleep(delay)
             continue
         if resp.status_code != 200:
-            logger.warning("NVIDIA model %s returned HTTP %s", model, resp.status_code)
-            raise LLMUnavailableError(f"NVIDIA model {model} returned HTTP {resp.status_code}")
+            logger.warning("%s model %s returned HTTP %s", label, model, resp.status_code)
+            raise LLMUnavailableError(f"{label} model {model} returned HTTP {resp.status_code}")
 
         try:
             choice = (resp.json().get("choices") or [{}])[0]
         except (ValueError, AttributeError):
-            raise LLMResponseError(f"NVIDIA model {model} returned a non-JSON HTTP body")
+            raise LLMResponseError(f"{label} model {model} returned a non-JSON HTTP body")
         content = ((choice.get("message") or {}).get("content") or "").strip()
         if not content:
             raise LLMResponseError(
-                f"NVIDIA model {model} returned no content (finish_reason={choice.get('finish_reason')!r})"
+                f"{label} model {model} returned no content (finish_reason={choice.get('finish_reason')!r})"
             )
         if json_mode and choice.get("finish_reason") == "length":
             # Truncated JSON is never usable: report it instead of parsing half an answer.
             raise LLMResponseError(
-                f"NVIDIA model {model} stopped at max_tokens={max_tokens}; the JSON answer was cut off"
+                f"{label} model {model} stopped at max_tokens={max_tokens}; the JSON answer was cut off"
             )
         return content
-    raise LLMUnavailableError(f"NVIDIA model {model} failed after retry")  # pragma: no cover
+    raise LLMUnavailableError(f"{label} model {model} failed after retry")  # pragma: no cover
 
 
 def call_nvidia_llm(
@@ -199,29 +249,29 @@ def call_nvidia_llm(
     json_mode: bool = False,
 ) -> str:
     """Return the model's text. Raises LLMUnavailableError / LLMResponseError; never returns ''."""
-    api_key = get_nvidia_api_key()
-    if not api_key:
-        raise LLMUnavailableError("NVIDIA API key is not configured (OPENAI_API_KEY in backend/.env)")
+    targets = get_targets(model_override)
+    if not targets:
+        raise LLMUnavailableError("No AI key is configured (GEMINI_API_KEY or OPENAI_API_KEY in backend/.env)")
 
     messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + [
         {"role": "user", "content": prompt}
     ]
-    models = [model_override] if model_override else get_models()
     request_timeout = timeout if timeout is not None else get_timeout()
-    base_url = get_nvidia_base_url()
 
     last_error: Optional[LLMError] = None
-    for i, model in enumerate(models):
+    for i, (provider, model, base_url, api_key) in enumerate(targets):
         try:
             # Recorded on the live agent dashboard when called inside a tracked run (no-op otherwise).
-            with tool_call(f"nvidia:{model}", f"chat completion, max_tokens={max_tokens}") as t:
-                content = _complete(model, messages, temperature, max_tokens, request_timeout, api_key, base_url, json_mode)
+            with tool_call(f"{provider}:{model}", f"chat completion, max_tokens={max_tokens}") as t:
+                tmo = min(request_timeout, _gemini_timeout()) if provider == "gemini" else request_timeout
+                content = _complete(model, messages, temperature, max_tokens, tmo, api_key,
+                                    base_url, json_mode, provider)
                 t["summary"] = f"{len(content)} chars returned"
             return content
         except LLMError as e:
-            logger.warning("NVIDIA call failed: %s", e)
-            if i + 1 < len(models):
-                run_warn(f"{model} failed ({e}); trying fallback model {models[i + 1]}")
+            logger.warning("LLM call failed: %s", e)
+            if i + 1 < len(targets):
+                run_warn(f"{model} failed ({e}); trying fallback model {targets[i + 1][1]}")
             last_error = e
     raise last_error  # type: ignore[misc]
 
@@ -281,16 +331,20 @@ def get_vision_model() -> str:
 def call_nvidia_vision_ocr(image_b64_jpeg: str, page_label: str = "page", max_tokens: int = 1500,
                            timeout: Optional[float] = None) -> str:
     """Transcribe the text in one page image (base64 JPEG). Raises LLMUnavailableError / LLMResponseError."""
-    api_key = get_nvidia_api_key()
-    if not api_key:
-        raise LLMUnavailableError("NVIDIA API key is not configured (OPENAI_API_KEY in backend/.env)")
-    model = get_vision_model()
     messages = [{"role": "user", "content": [
         {"type": "text", "text": OCR_PROMPT},
         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64_jpeg}"}},
     ]}]
-    with tool_call(f"nvidia-vision:{model}", f"read text from {page_label}") as t:
+    gkey = get_gemini_api_key()
+    if gkey:  # Gemini Flash is multimodal and much faster than the NVIDIA vision model
+        provider, model, base_url, api_key = "gemini", get_gemini_models()[0], GEMINI_BASE_URL, gkey
+    else:
+        api_key = get_nvidia_api_key()
+        if not api_key:
+            raise LLMUnavailableError("No AI key is configured (GEMINI_API_KEY or OPENAI_API_KEY in backend/.env)")
+        provider, model, base_url = "nvidia", get_vision_model(), get_nvidia_base_url()
+    with tool_call(f"{provider}-vision:{model}", f"read text from {page_label}") as t:
         text = _complete(model, messages, 0.0, max_tokens, timeout or VISION_TIMEOUT, api_key,
-                         get_nvidia_base_url(), False)
+                         base_url, False, provider)
         t["summary"] = f"{page_label}: {len(text)} characters read"
     return text
