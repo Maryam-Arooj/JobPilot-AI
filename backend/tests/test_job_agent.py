@@ -121,7 +121,7 @@ def test_score_counts_only_skills_written_in_the_job():
     s = jm.score_job(PROFILE, job)
     assert set(s["matched_skills"]) == {"Python", "SQL", "Airflow"} and s["missing_skills"] == ["Kafka"]
     assert "Docker" not in s["matched_skills"]          # in the CV but not in the job
-    assert 70 <= s["match_score"] <= 100 and s["alignment"] in ("Strong match", "Good match")
+    assert 60 <= s["match_score"] <= 100 and s["alignment"] in ("Strong match", "Good match")
     assert s["required_years"] == 3 and s["candidate_years"] == 4.0
 
 
@@ -153,7 +153,9 @@ def test_search_runs_both_providers_and_never_saves_error_items(providers):
     assert r.status_code == 200, r.text
     body = r.json()
     assert {j["company"] for j in body["results"]} == {"Acme Analytics", "Beta Co", "Contoso"}
-    assert body["provider_status"]["serpapi:google_jobs"]["ok"] and body["provider_status"]["apify:linkedin_jobs"]["jobs"] == 1
+    status = body["provider_status"]
+    assert status["serpapi:google_jobs [Pakistan]"]["ok"] and status["apify:linkedin_jobs [Pakistan]"]["jobs"] == 1
+    assert providers["serp"][0]["gl"] == "pk"
     assert body["results"][0]["match_score"] is not None
     assert body["results"][-1]["match_score"] is None   # 'Office Assistant' has no comparable skills
     snap = client.get("/agent-runs/snapshot?range=1h", headers=headers).json()
@@ -166,7 +168,7 @@ def test_one_provider_failing_still_returns_the_other(monkeypatch, providers):
         _, headers = _user()
         r = client.post("/jobs/search?query=Data%20Engineer", headers=headers)
     assert r.status_code == 200 and len(r.json()["results"]) == 2
-    assert r.json()["provider_status"]["apify:linkedin_jobs"]["ok"] is False
+    assert r.json()["provider_status"]["apify:linkedin_jobs [any]"]["ok"] is False
 
 
 def test_jobs_from_uploaded_cv_without_saving_it(providers):
@@ -175,7 +177,11 @@ def test_jobs_from_uploaded_cv_without_saving_it(providers):
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["query"] == "Data Engineer" and body["location"] == "Lahore, Pakistan"
-    assert providers["serp"][0]["q"] == "Data Engineer"
+    assert body["searched"] == "remote + Lahore, Pakistan"
+    serp_calls = providers["serp"]
+    assert any(c.get("ltype") == "1" for c in serp_calls)                      # remote search (preferred)
+    assert any(c.get("location") == "Lahore, Pakistan" and c.get("gl") == "pk" for c in serp_calls)  # Pakistan on-site
+    assert all(c["q"].startswith("Data Engineer") for c in serp_calls)
     scores = [j["match_score"] for j in body["results"] if j["match_score"] is not None]
     assert scores == sorted(scores, reverse=True) and body["results"][0]["matched_skills"]
     db = SessionLocal()
@@ -205,3 +211,38 @@ def test_match_endpoint_uses_grounded_ai_and_stores_evidence(providers):
     assert set(m["matched_requirements"]) == {"Python", "SQL"} and "Kafka" in m["gaps"]
     stored = client.get(f"/jobs/{acme['id']}/match", headers=headers).json()
     assert stored["evidence"]
+
+
+
+def test_remote_search_uses_google_work_from_home_filter(providers):
+    _, headers = _user()
+    r = client.post("/jobs/search?query=Data%20Engineer&country=Remote%20Worldwide", headers=headers)
+    assert r.status_code == 200
+    assert providers["serp"][0].get("ltype") == "1" and "location" not in providers["serp"][0]
+    assert providers["apify"][0]["keywords"] == "Data Engineer remote" and providers["apify"][0]["location"] == "Worldwide"
+    assert all(j["remote"] for j in r.json()["results"])
+
+
+def test_from_cv_country_mode_searches_only_that_country(providers):
+    _, headers = _user()
+    r = client.post("/jobs/from-cv", headers=headers, json={"mode": "location", "location": "Pakistan"})
+    assert r.status_code == 200 and r.json()["searched"] == "Pakistan"
+    assert not any(c.get("ltype") == "1" for c in providers["serp"])
+
+
+def test_one_matching_skill_is_not_a_strong_match():
+    s = jm.score_job(PROFILE, {"title": "Automation Architect", "description": "Experience with Python."})
+    assert s["match_score"] is not None and s["match_score"] < 65
+
+
+def test_generic_words_in_cv_are_not_counted_as_skills():
+    prof = {**PROFILE, "professional": {**PROFILE["professional"], "skills": ["Python", "Development", "Software"]}}
+    s = jm.score_job(prof, {"title": "Software Engineer", "description": "Development of software with Python and Java."})
+    assert "Development" not in s["matched_skills"] and "Software" not in s["matched_skills"]
+
+
+def test_remote_jobs_are_preferred_within_similar_scores():
+    from backend.api.jobs import _rank
+    ranked = _rank([{"match_score": 70, "remote": False, "id": 1}, {"match_score": 67, "remote": True, "id": 2},
+                    {"match_score": None, "remote": True, "id": 3}])
+    assert [r["id"] for r in ranked] == [2, 1, 3]

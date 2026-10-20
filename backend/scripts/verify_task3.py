@@ -50,18 +50,22 @@ def main():
     if r.status_code != 200:
         print("  " + r.text[:400]); return finish()
     body = r.json()
-    print(f"  search: role={body['query']!r} location={body['location']!r}")
+    print(f"  search: role={body['query']!r}  searched: {body.get('searched')}  (remote first, then your CV's location)")
     for name, st in body["provider_status"].items():
         print(f"  provider {name:22} " + (f"OK, {st['jobs']} jobs" if st.get("ok") else f"FAILED: {st.get('error')}"))
     jobs = body["results"]
     print(f"\n  {'score':>5}  {'job':55} matched / missing")
     for j in jobs[:12]:
         score = "-" if j["match_score"] is None else f"{j['match_score']}%"
-        print(f"  {score:>5}  {(j['title'] + ' @ ' + j['company'])[:55]:55} {', '.join(j['matched_skills'][:4])} / {', '.join(j['missing_skills'][:3])}")
+        place = "REMOTE" if j.get("remote") else (j.get("location") or "")[:18]
+        print(f"  {score:>5}  {place:18} {(j['title'] + ' @ ' + j['company'])[:45]:45} {', '.join(j['matched_skills'][:4])} / {', '.join(j['missing_skills'][:3])}")
     check("live jobs returned", len(jobs) > 0, f"{len(jobs)} jobs")
-    check("Google Jobs (SerpAPI) answered", body["provider_status"].get("serpapi:google_jobs", {}).get("ok"))
-    check("LinkedIn (Apify) answered", body["provider_status"].get("apify:linkedin_jobs", {}).get("ok"),
+    st = body["provider_status"]
+    check("Google Jobs (SerpAPI) answered", any(v.get("ok") for k, v in st.items() if k.startswith("serpapi")))
+    check("LinkedIn (Apify) answered", any(v.get("ok") for k, v in st.items() if k.startswith("apify")),
           "optional: results still come from Google Jobs if this fails")
+    remote = sum(1 for j in jobs if j.get("remote"))
+    check("remote jobs found", remote > 0, f"{remote} remote of {len(jobs)}")
     scored = [j for j in jobs if j["match_score"] is not None]
     check("ranked by match score", [j["match_score"] for j in scored] == sorted((j["match_score"] for j in scored), reverse=True))
     check("no invented scores (jobs without skills show no score)", all(j["match_score"] is None or j["matched_skills"] or j["missing_skills"] for j in jobs))

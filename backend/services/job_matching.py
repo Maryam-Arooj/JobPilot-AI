@@ -28,6 +28,11 @@ EXTRA_SKILLS = [
 ]
 VOCAB: List[str] = list(dict.fromkeys(SKILL_KEYWORDS + EXTRA_SKILLS))
 CASE_SENSITIVE = {"Go", "R", "C", "SAP", "SEO", "SEM", "RAG", "LLM", "NLP", "ETL", "JWT", "iOS"}
+# Words that appear in CV skill lists but say nothing on their own; never counted as a matched skill.
+GENERIC_SKILLS = {"development", "software", "engineering", "design", "programming", "web", "technology", "it",
+                  "computer", "coding", "developer", "engineer", "management", "analysis", "research", "teamwork",
+                  "hard working", "hardworking", "problem solving", "fast learner", "ai", "data"}
+MIN_SKILLS_FOR_FULL_CONFIDENCE = 4
 STOP = {"senior", "junior", "lead", "the", "and", "for", "with", "remote", "engineer", "developer", "-", "&", "of", "in"}
 
 
@@ -46,7 +51,8 @@ def job_text(job: Dict[str, Any]) -> str:
 def candidate_skills(profile: Dict[str, Any]) -> List[str]:
     prof = (profile or {}).get("professional") or {}
     skills = prof.get("skills") if isinstance(prof.get("skills"), list) and prof.get("skills") else None
-    return flatten_skills({"technical": skills} if skills else ((profile or {}).get("skills") or {}))
+    flat = flatten_skills({"technical": skills} if skills else ((profile or {}).get("skills") or {}))
+    return [s for s in flat if s.strip().lower() not in GENERIC_SKILLS and len(s.strip()) > 1]
 
 
 def candidate_title(profile: Dict[str, Any]) -> str:
@@ -106,7 +112,10 @@ def score_job(profile: Dict[str, Any], job: Dict[str, Any], job_skills: Optional
     if not found:
         score = None
     else:
-        score = round(100 * (0.8 * len(matched) / len(found) + 0.2 * title_sim))
+        raw = 100 * (0.8 * len(matched) / len(found) + 0.2 * title_sim)
+        # Few comparable skills = weak evidence: pull the score towards 50 instead of claiming a strong match.
+        confidence = min(1.0, len(found) / MIN_SKILLS_FOR_FULL_CONFIDENCE)
+        score = round(50 + (raw - 50) * confidence)
         if need is not None and have is not None and have < need:
             score = max(0, score - 10)
     alignment = ("Not enough data" if score is None else "Strong match" if score >= 75

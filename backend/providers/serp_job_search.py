@@ -65,23 +65,50 @@ class SerpJobSearchProvider(JobSearchProvider):
             raise RuntimeError("SerpAPI key not configured (SERPAPI_KEY in backend/.env)")
         filters = filters or {}
         location = (filters.get("location") or "").strip()
-        base = {"engine": "google_jobs", "q": query, "hl": "en"}
+        remote = bool(filters.get("remote"))
+        base: Dict[str, Any] = {"engine": "google_jobs", "q": query, "hl": "en"}
+        gl = country_code(location)
+        if gl:
+            base["gl"] = gl  # results for that country instead of Google's US default
         attempts = []
-        if location and location.lower() not in ("remote", "remote worldwide", "all"):
-            attempts.append({**base, "location": location})
-        # Google Jobs often answers "no results" for a location string it doesn't recognise; the
-        # location inside the query text ("... in Lahore") usually works, so try that as well.
-        q_with_loc = query if (not location or location.lower() in query.lower()) else f"{query} {location}"
-        attempts.append({**base, "q": q_with_loc})
+        if remote:
+            # Google Jobs "work from home" filter, then a plain "remote" query as a fallback
+            attempts.append({**base, "ltype": "1"})
+            attempts.append({**base, "q": f"{query} remote"})
+        else:
+            if location:
+                attempts.append({**base, "location": location})
+            # Google often rejects location strings it doesn't recognise; the location in the query works
+            q_with_loc = query if (not location or location.lower() in query.lower()) else f"{query} {location}"
+            attempts.append({**base, "q": q_with_loc})
         self.last_note = ""
         for params in attempts:
             data = self._call(params)
             jobs = [j for j in (adapt_serp_job(r) for r in data.get("jobs_results") or []) if j]
+            if remote:
+                for j in jobs:
+                    j["remote"] = True if params.get("ltype") == "1" else j["remote"]
             if jobs:
                 return jobs
             if data.get("error"):
                 self.last_note = str(data["error"])[:200]
         return []
+
+
+COUNTRY_CODES = {"pakistan": "pk", "united states": "us", "usa": "us", "united kingdom": "uk", "uk": "uk",
+                 "england": "uk", "canada": "ca", "united arab emirates": "ae", "uae": "ae", "dubai": "ae",
+                 "germany": "de", "saudi arabia": "sa", "india": "in", "australia": "au", "qatar": "qa"}
+PK_CITIES = ("lahore", "karachi", "islamabad", "rawalpindi", "faisalabad", "multan", "peshawar", "sialkot", "gujranwala", "quetta")
+
+
+def country_code(location: str) -> str:
+    loc = (location or "").lower()
+    if any(c in loc for c in PK_CITIES):
+        return "pk"
+    for name, code in COUNTRY_CODES.items():
+        if name in loc:
+            return code
+    return ""
 
 
 SerpJobSearchTool = SerpJobSearchProvider

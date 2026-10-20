@@ -55,9 +55,13 @@ class ApifyJobSource(JobSearchProvider):
         if not self.api_token:
             raise RuntimeError("Apify token not configured (APIFY_API_TOKEN in backend/.env)")
         filters = filters or {}
-        payload: Dict[str, Any] = {"keywords": query, "limitPerSource": self.limit, "scrapeCompany": False}
+        remote = bool(filters.get("remote"))
+        payload: Dict[str, Any] = {"keywords": f"{query} remote" if remote else query,
+                                   "limitPerSource": self.limit, "scrapeCompany": False}
         loc = (filters.get("location") or "").strip()
-        if loc and loc.lower() not in ("all", "remote worldwide"):
+        if remote and not loc:
+            payload["location"] = "Worldwide"
+        elif loc and loc.lower() not in ("all", "remote worldwide"):
             payload["location"] = loc
         resp = requests.post(
             f"https://api.apify.com/v2/acts/{self.actor_id}/run-sync-get-dataset-items",

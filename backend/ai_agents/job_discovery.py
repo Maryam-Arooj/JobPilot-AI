@@ -1,5 +1,6 @@
 """Job Agent — discovery: live search on SerpAPI (Google Jobs) and Apify (LinkedIn) in parallel."""
 import contextvars
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
@@ -7,7 +8,7 @@ from ..services.agent_runs import run_log, run_step, tool_call
 from ..services.job_normalizer import deduplicate_jobs, normalize_job
 
 LOCATION_HINTS = {"pakistan": "Pakistan", "lahore": "Lahore, Pakistan", "karachi": "Karachi, Pakistan",
-                  "islamabad": "Islamabad, Pakistan", "remote": "Remote"}
+                  "islamabad": "Islamabad, Pakistan"}
 
 
 class JobDiscoveryAgent:
@@ -17,28 +18,32 @@ class JobDiscoveryAgent:
         self.apify = ApifyJobSource()
         self.serp = SerpJobSearchProvider()
 
-    def discover_intent(self, natural_query: str, career_profile: Dict[str, Any], location: Optional[str] = None) -> Dict[str, Any]:
+    def discover_intent(self, natural_query: str, career_profile: Dict[str, Any], location: Optional[str] = None,
+                        remote: bool = False) -> Dict[str, Any]:
         q = natural_query.strip()
         filters: Dict[str, Any] = {}
+        if remote or re.search(r"\bremote\b", q, re.I):
+            filters["remote"] = True
+            q = re.sub(r"\s*\bremote\b\s*", " ", q, flags=re.I).strip() or q
         if location:
             filters["location"] = location
         else:
             for word, loc in LOCATION_HINTS.items():
                 if word in q.lower():
                     filters["location"] = loc
-        if "remote" in q.lower():
-            filters["remote"] = True
         return {"original_query": natural_query, "search_queries": [q], "filters": filters}
 
     def _run_provider(self, name: str, provider, query: str, filters: Dict[str, Any]):
-        with tool_call(f"{name}", f"query={query!r}" + (f" location={filters.get('location')!r}" if filters.get("location") else "")) as tc:
+        where = ("remote" if filters.get("remote") else "") + (f" location={filters.get('location')!r}" if filters.get("location") else "")
+        with tool_call(f"{name}", f"query={query!r} {where}".strip()) as tc:
             jobs = provider.search(query, filters)
             note = getattr(provider, "last_note", "")
             tc["summary"] = f"{len(jobs)} jobs" + (f" ({note})" if note else "")
         return jobs
 
-    def discover(self, natural_query: str, career_profile: Dict[str, Any], location: Optional[str] = None) -> Dict[str, Any]:
-        intent = self.discover_intent(natural_query, career_profile, location)
+    def discover(self, natural_query: str, career_profile: Dict[str, Any], location: Optional[str] = None,
+                 remote: bool = False) -> Dict[str, Any]:
+        intent = self.discover_intent(natural_query, career_profile, location, remote)
         query, filters = intent["search_queries"][0], intent["filters"]
         providers = [("serpapi:google_jobs", self.serp), ("apify:linkedin_jobs", self.apify)]
         ctx = contextvars.copy_context()

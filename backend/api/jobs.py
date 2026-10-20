@@ -96,6 +96,8 @@ def _save_jobs(db: Session, user_id: int, query: str, intent: Dict[str, Any], jo
                                              Job.normalized_company == j["normalized_company"],
                                              Job.location == (j.get("location") or "")).first())
         if existing is not None:
+            if j.get("remote") and not existing.remote:
+                existing.remote = True  # found again by a remote / work-from-home search
             saved.append(existing)
             continue
         job = Job(
@@ -120,34 +122,78 @@ def _save_jobs(db: Session, user_id: int, query: str, intent: Dict[str, Any], jo
     return saved
 
 
-def _discover(run, query: str, location: Optional[str], profile_data: Dict[str, Any]) -> Dict[str, Any]:
-    run.step("Search live job providers (Google Jobs + LinkedIn in parallel)", 1, 3)
-    try:
-        return JobDiscoveryAgent().discover(query, profile_data, location=location)
-    except HTTPException as e:
-        logger.error("Job discovery failed: %s", e.detail)
-        raise HTTPException(status_code=e.status_code,
+REMOTE_WORDS = ("remote worldwide", "remote", "worldwide remote", "work from home")
+
+
+def _discover(run, query: str, searches: List[Dict[str, Any]], profile_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Run one or more live searches (e.g. remote + a country) in parallel and merge them."""
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+    label = " + ".join("remote" if s.get("remote") else (s.get("location") or "any location") for s in searches)
+    run.step(f"Search live jobs on Google Jobs + LinkedIn ({label})", 1, 3)
+    ctx = contextvars.copy_context()
+    outcomes = []
+    with ThreadPoolExecutor(max_workers=len(searches)) as pool:
+        futs = [pool.submit(ctx.copy().run, JobDiscoveryAgent().discover, query, profile_data,
+                            s.get("location"), bool(s.get("remote"))) for s in searches]
+        for s, f in zip(searches, futs):
+            try:
+                outcomes.append((s, f.result()))
+            except HTTPException as e:
+                logger.error("Job discovery failed for %s: %s", s, e.detail)
+                outcomes.append((s, None))
+    ok = [(s, r) for s, r in outcomes if r is not None]
+    if not ok:
+        raise HTTPException(status_code=503,
                             detail="No jobs returned from live job providers. Check Agent Transparency for each provider's error.")
+    from ..services.job_normalizer import deduplicate_jobs
+    merged, errors, status = [], [], {}
+    for s, r in ok:
+        tag = "remote" if s.get("remote") else (s.get("location") or "any")
+        for j in r["results"]:
+            if s.get("remote"):
+                j["remote"] = j.get("remote") or True
+            merged.append(j)
+        errors += r["provider_errors"]
+        for name, st in r["provider_status"].items():
+            status[f"{name} [{tag}]"] = st
+    return {"intent": ok[0][1]["intent"], "results": deduplicate_jobs(merged), "provider_errors": errors, "provider_status": status}
+
+
+def _searches_for(location: Optional[str], mode: str = "auto") -> List[Dict[str, Any]]:
+    """mode: auto = remote first + the location (if any); remote = remote only; location = that place only."""
+    loc = (location or "").strip()
+    if loc.lower() in REMOTE_WORDS or mode == "remote":
+        return [{"remote": True}]
+    if mode == "location":
+        return [{"location": loc or None}]
+    return [{"remote": True}] + ([{"location": loc}] if loc and loc.upper() != "ALL" else [])
+
+
+def _rank(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Best match first; remote jobs get a small preference within similar scores."""
+    return sorted(results, key=lambda r: (r.get("match_score") is None,
+                                          -((r.get("match_score") or 0) + (5 if r.get("remote") else 0))))
 
 
 @router.post("/search")
 def search_jobs(
     query: str = Query(..., description="Job title / keywords"),
-    country: Optional[str] = Query(None, description="Country or city, or ALL"),
+    country: Optional[str] = Query(None, description="Country or city, 'Remote Worldwide', or ALL"),
     user_id: int = Depends(get_current_user_id),
     db: Session = Depends(get_db),
 ):
     location = country if country and country.upper() != "ALL" else None
+    searches = _searches_for(location, "remote" if (location or "").lower() in REMOTE_WORDS else "location")
     with track_run(user_id, "job", f"Search jobs: {query}" + (f" ({location})" if location else ""),
                    input_summary={"query": query, "location": location}) as run:
         profile = _profile_dict(db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first())
-        res = _discover(run, query, location, profile)
+        res = _discover(run, query, searches, profile)
         run.step("Save and score jobs against your CV", 3, 3)
         saved = _save_jobs(db, user_id, query, res["intent"], res["results"])
-        results = [_job_payload(j, score_job(profile, _job_dict(j)) if profile else None) for j in saved]
-        results.sort(key=lambda r: (r.get("match_score") is None, -(r.get("match_score") or 0)))
+        results = _rank([_job_payload(j, score_job(profile, _job_dict(j)) if profile else None) for j in saved])
         if res["provider_errors"]:
-            run.warn(f"{len(res['provider_errors'])} provider(s) failed; results come from the others")
+            run.warn(f"{len(res['provider_errors'])} provider call(s) failed; results come from the others")
         if not saved:
             run.warn("The live providers returned no jobs for this search")
         run.set_output({"jobs": len(saved), "providers": res["provider_status"]})
@@ -158,6 +204,7 @@ class FromCvRequest(BaseModel):
     profile_data: Optional[Dict[str, Any]] = None   # from /documents/parse (works without saving the CV)
     query: Optional[str] = None                      # override the role taken from the CV
     location: Optional[str] = None                   # override the location taken from the CV
+    mode: str = "auto"                               # auto = remote + location, remote, location
 
 
 def cv_search_terms(profile: Dict[str, Any]) -> Dict[str, Optional[str]]:
@@ -180,20 +227,24 @@ def jobs_from_cv(req: FromCvRequest, user_id: int = Depends(get_current_user_id)
     terms = cv_search_terms(profile)
     query = (req.query or terms["query"] or "").strip()
     location = (req.location or terms["location"] or "").strip() or None
-    with track_run(user_id, "job", f"Find jobs for your CV: {query}" + (f" ({location})" if location else ""),
-                   input_summary={"query": query, "location": location, "skills": len(candidate_skills(profile)),
+    if location and location.upper() == "ALL":
+        location = terms["location"]
+    searches = _searches_for(location, req.mode if req.mode in ("auto", "remote", "location") else "auto")
+    where = " + ".join("remote" if s.get("remote") else (s.get("location") or "any location") for s in searches)
+    with track_run(user_id, "job", f"Find jobs for your CV: {query} ({where})",
+                   input_summary={"query": query, "location": location, "mode": req.mode, "skills": len(candidate_skills(profile)),
                                   "source": "uploaded CV" if req.profile_data else "saved profile"}) as run:
-        res = _discover(run, query, location, profile)
-        run.step("Rank jobs by match with your CV", 3, 3)
+        res = _discover(run, query, searches, profile)
+        run.step("Rank jobs by match with your CV (remote preferred)", 3, 3)
         saved = _save_jobs(db, user_id, f"[CV] {query}", res["intent"], res["results"])
-        ranked = [_job_payload(j, score_job(profile, _job_dict(j))) for j in saved]
-        ranked.sort(key=lambda r: (r["match_score"] is None, -(r["match_score"] or 0)))
-        run.set_output({"query": query, "location": location, "jobs": len(ranked),
+        ranked = _rank([_job_payload(j, score_job(profile, _job_dict(j))) for j in saved])
+        run.set_output({"query": query, "searched": where, "jobs": len(ranked),
+                        "remote_jobs": sum(1 for r in ranked if r.get("remote")),
                         "top": [f"{r['title']} @ {r['company']} ({r['match_score']})" for r in ranked[:3]],
                         "providers": res["provider_status"]})
         if not ranked:
             run.warn("The live providers returned no jobs for this role and location")
-        return {"query": query, "location": location, "candidate_skills": candidate_skills(profile),
+        return {"query": query, "location": location, "searched": where, "candidate_skills": candidate_skills(profile),
                 "results": ranked, "provider_status": res["provider_status"]}
 
 
@@ -208,8 +259,7 @@ def get_job_recommendations(limit: int = 20, user_id: int = Depends(get_current_
     profile = _profile_dict(db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first())
     allowed_ids = _user_job_ids(db, user_id)
     jobs = db.query(Job).filter(Job.id.in_(allowed_ids)).order_by(Job.id.desc()).limit(100).all() if allowed_ids else []
-    recs = [_job_payload(j, score_job(profile, _job_dict(j))) for j in jobs]
-    recs.sort(key=lambda r: (r["match_score"] is None, -(r["match_score"] or 0)))
+    recs = _rank([_job_payload(j, score_job(profile, _job_dict(j))) for j in jobs])
     return {"candidate_skills": candidate_skills(profile), "total_recommendations": len(recs), "results": recs[:limit]}
 
 

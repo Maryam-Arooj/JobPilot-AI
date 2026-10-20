@@ -102,7 +102,7 @@ function JobsContent() {
   const [cvLoading, setCvLoading] = useState(false);
 
   /** Upload-your-CV quick path: the Job Agent searches live jobs for the CV's role and location. */
-  const runCvSearch = async () => {
+  const runCvSearch = async (country: string = 'ALL') => {
     setCvLoading(true);
     setLoading(true);
     setSearchError(null);
@@ -111,11 +111,17 @@ function JobsContent() {
     try {
       const data = await apiFetch('/jobs/from-cv', {
         method: 'POST',
-        body: JSON.stringify(profileData ? { profile_data: profileData } : {}),
+        body: JSON.stringify({
+          ...(profileData ? { profile_data: profileData } : {}),
+          // All countries: remote jobs (preferred) + your CV's location. Remote: remote only. A country: that country only.
+          ...(country === 'ALL' ? { mode: 'auto' }
+            : country === 'Remote Worldwide' ? { mode: 'remote' }
+            : { mode: 'location', location: country }),
+        }),
       });
       setRecommendations(data.results || []);
       if (Array.isArray(data.candidate_skills)) setCandidateSkills(data.candidate_skills);
-      setCvInfo({ query: data.query, location: data.location, providers: data.provider_status });
+      setCvInfo({ query: data.query, location: data.searched || data.location, providers: data.provider_status });
       setSearchQuery(data.query || '');
       setCvSearchActive(true);
       setViewMode('recommended');
@@ -131,7 +137,7 @@ function JobsContent() {
   };
 
   useEffect(() => {
-    if (fromCv) runCvSearch();
+    if (fromCv) runCvSearch('ALL');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fromCv]);
 
@@ -171,8 +177,10 @@ function JobsContent() {
   };
 
   useEffect(() => {
-    loadRecommendations();
+    // In CV mode the list comes from the live CV search; don't overwrite it with stored jobs.
+    if (!cvSearchActive && !fromCv) loadRecommendations();
     loadJobs(selectedCountry);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedCountry]);
 
   // Handle incoming query param from CV builder
@@ -246,7 +254,9 @@ function JobsContent() {
   const filteredJobs = currentList.filter(job => {
     if (filterRemote !== null && job.remote !== filterRemote) return false;
     if (filterAlignment !== 'ALL' && job.alignment !== filterAlignment) return false;
-    if (selectedCountry !== 'ALL') {
+    if (selectedCountry === 'Remote Worldwide') {
+      if (!job.remote) return false;
+    } else if (selectedCountry !== 'ALL' && !(cvSearchActive && viewMode === 'recommended')) {
       const cLower = selectedCountry.toLowerCase();
       const jobCLower = (job.country || '').toLowerCase();
       const jobLocLower = (job.location || '').toLowerCase();
@@ -276,7 +286,7 @@ function JobsContent() {
 
           <div className="flex items-center gap-2">
             <button
-              onClick={() => { try { sessionStorage.removeItem('jobpilot_cv_profile'); } catch { /* ignore */ } runCvSearch(); }}
+              onClick={() => { try { sessionStorage.removeItem('jobpilot_cv_profile'); } catch { /* ignore */ } runCvSearch(selectedCountry); }}
               disabled={cvLoading}
               className="px-3.5 py-2 rounded-xl bg-accent text-white text-xs font-bold flex items-center gap-1.5 hover:opacity-90 shadow-2xs disabled:opacity-60"
             >
@@ -456,10 +466,11 @@ function JobsContent() {
                 key={c.code}
                 onClick={() => {
                   setSelectedCountry(c.code);
-                  if (searchQuery.trim()) {
-                    handleSearch(searchQuery, c.code);
+                  // Always a live search: by your CV's role (or the role you typed) in that country / remote.
+                  if (cvSearchActive || !searchQuery.trim()) {
+                    runCvSearch(c.code);
                   } else {
-                    loadJobs(c.code);
+                    handleSearch(searchQuery, c.code);
                   }
                 }}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
