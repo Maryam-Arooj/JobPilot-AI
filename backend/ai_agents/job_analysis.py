@@ -21,12 +21,12 @@ class JobAnalysisAgent:
             "required_skills": req_skills,
             "preferred_skills": job.get("preferred_skills") or [],
             "experience_requirements": job.get("experience_years") or 0,
-            "education_requirements": ["BS Computer Science or equivalent"],
-            "location_requirements": job.get("location") or "Remote",
+            "education_requirements": [],  # never assumed; only the AI analysis reads it from the job text
+            "location_requirements": job.get("location") or "",
             "work_arrangement": "remote" if job.get("remote") else "onsite",
             "responsibilities": job.get("responsibilities") or [],
             "technologies": techs,
-            "seniority": job.get("seniority") or "Mid-Senior",
-            "industry": job.get("industry") or "Technology"
+            "seniority": job.get("seniority"),
+            "industry": job.get("industry")
         }
 

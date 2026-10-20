@@ -69,7 +69,7 @@ class JobMatchAgent:
         matched_count = len(matched_req) + (1 if req_exp_years > 0 and exp_matched else 0)
 
         if total_reqs == 0:
-            overall = "Strong Alignment"
+            overall = "Not enough data"  # the job lists nothing we can compare
         else:
             match_pct = (matched_count / total_reqs) * 100
             if match_pct >= 75:
@@ -92,7 +92,7 @@ class JobMatchAgent:
                 "matched": exp_matched
             },
             "education_match": {
-                "matched": True
+                "matched": None  # not assessed
             },
             "location_match": {
                 "job_location": job.get("location"),

@@ -21,74 +21,67 @@ def canonicalize_url(url: str) -> str:
     except Exception:
         return url.strip().lower()
 
+def _as_list(v: Any, sep: str = "\n") -> List[str]:
+    if not v:
+        return []
+    if isinstance(v, str):
+        return [x.strip() for x in v.split(sep) if x.strip()]
+    if isinstance(v, (list, tuple)):
+        return [str(x).strip() for x in v if str(x).strip()]
+    return [str(v)]
+
+
 def normalize_job(raw: Dict[str, Any], provider: str) -> Dict[str, Any]:
+    """Provider job -> JobPilot job. Only values the provider sent; unknown fields stay empty."""
     title = (raw.get("title") or raw.get("job_title") or "").strip()
     company = (raw.get("company") or raw.get("company_name") or "").strip()
     location = (raw.get("location") or raw.get("job_location") or "").strip()
     app_url = raw.get("application_url") or raw.get("url") or raw.get("link") or ""
     c_url = canonicalize_url(app_url)
-    
+
     norm_title = re.sub(r'\s+', ' ', title.lower())
     norm_company = re.sub(r'\s+', ' ', company.lower())
     norm_location = re.sub(r'\s+', ' ', location.lower())
-    
-    # Remote detection
     is_remote = bool(raw.get("remote")) or "remote" in norm_location or "remote" in norm_title
-    
-    # Requirement arrays
-    reqs = raw.get("requirements") or []
-    if isinstance(reqs, str):
-        reqs = [r.strip() for r in reqs.split("\n") if r.strip()]
-        
-    pref = raw.get("preferred_skills") or []
-    if isinstance(pref, str):
-        pref = [p.strip() for p in pref.split("\n") if p.strip()]
-        
-    resp = raw.get("responsibilities") or []
-    if isinstance(resp, str):
-        resp = [r.strip() for r in resp.split("\n") if r.strip()]
-
-    techs = raw.get("technologies") or raw.get("skills") or []
-    if isinstance(techs, str):
-        techs = [t.strip() for t in techs.split(",") if t.strip()]
-
-    source_record = {
-        "provider": provider,
-        "source_url": app_url,
-        "raw_data": raw
-    }
-
+    salary = raw.get("salary") or (raw.get("detected_extensions", {}).get("salary")
+                                   if isinstance(raw.get("detected_extensions"), dict) else None)
+    industry = raw.get("industry")
+    if isinstance(industry, list):
+        industry = ", ".join(map(str, industry))
+    source = raw.get("source") or provider
     return {
         "title": title,
         "company": company,
         "location": location,
         "remote": is_remote,
-        "employment_type": raw.get("employment_type", "Full-time"),
-        "salary": raw.get("salary") or (raw.get("detected_extensions", {}).get("salary") if isinstance(raw.get("detected_extensions"), dict) else None),
-        "description": raw.get("description", ""),
-        "requirements": reqs,
-        "preferred_skills": pref,
-        "responsibilities": resp,
+        "employment_type": raw.get("employment_type") or None,
+        "salary": str(salary) if salary not in (None, "") else None,
+        "description": raw.get("description") or "",
+        "requirements": _as_list(raw.get("requirements")),
+        "preferred_skills": _as_list(raw.get("preferred_skills")),
+        "responsibilities": _as_list(raw.get("responsibilities")),
         "application_url": app_url,
         "canonical_application_url": c_url,
-        "source": provider,
+        "source": source,
         "source_url": app_url,
         "posted_at": raw.get("posted_at"),
         "retrieved_at": raw.get("retrieved_at"),
         "extraction_method": raw.get("extraction_method", "provider"),
-        "technologies": techs,
-        "seniority": raw.get("seniority", "Mid-Senior"),
+        "technologies": _as_list(raw.get("technologies") or raw.get("skills"), ","),
+        "seniority": raw.get("seniority") or None,
         "experience_years": raw.get("experience_years"),
-        "industry": raw.get("industry", "Technology"),
-        "job_type": raw.get("job_type", "Full-time"),
+        "industry": industry or None,
+        "job_type": raw.get("job_type") or raw.get("employment_type") or None,
         "country": raw.get("country", ""),
         "city": raw.get("city", ""),
         "normalized_title": norm_title,
         "normalized_company": norm_company,
         "extraction_provenance": raw.get("extraction_provenance"),
         "extraction_error": raw.get("extraction_error"),
-        "sources": [source_record]
+        "sources": [{"provider": source, "source_url": app_url,
+                     "raw_data": {k: v for k, v in raw.items() if k not in ("description",)}}],
     }
+
 
 def calculate_text_similarity(text1: str, text2: str) -> float:
     """Calculates token Jaccard similarity between two text descriptions."""

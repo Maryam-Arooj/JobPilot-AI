@@ -81,6 +81,7 @@ function JobsContent() {
   const searchParams = useSearchParams();
   const queryParam = searchParams.get('query') || searchParams.get('role');
   const sourceParam = searchParams.get('source');
+  const fromCv = searchParams.get('from') === 'cv';
 
   const [viewMode, setViewMode] = useState<'all' | 'recommended' | 'saved'>('recommended');
   const [searchQuery, setSearchQuery] = useState('');
@@ -97,6 +98,42 @@ function JobsContent() {
   const [savedJobs, setSavedJobs] = useState<Set<number>>(new Set());
   const [isMatching, setIsMatching] = useState(false);
   const [cvSearchActive, setCvSearchActive] = useState(false);
+  const [cvInfo, setCvInfo] = useState<{ query: string; location?: string | null; providers?: Record<string, any> } | null>(null);
+  const [cvLoading, setCvLoading] = useState(false);
+
+  /** Upload-your-CV quick path: the Job Agent searches live jobs for the CV's role and location. */
+  const runCvSearch = async () => {
+    setCvLoading(true);
+    setLoading(true);
+    setSearchError(null);
+    let profileData: any = null;
+    try { const raw = sessionStorage.getItem('jobpilot_cv_profile'); if (raw) profileData = JSON.parse(raw); } catch { /* ignore */ }
+    try {
+      const data = await apiFetch('/jobs/from-cv', {
+        method: 'POST',
+        body: JSON.stringify(profileData ? { profile_data: profileData } : {}),
+      });
+      setRecommendations(data.results || []);
+      if (Array.isArray(data.candidate_skills)) setCandidateSkills(data.candidate_skills);
+      setCvInfo({ query: data.query, location: data.location, providers: data.provider_status });
+      setSearchQuery(data.query || '');
+      setCvSearchActive(true);
+      setViewMode('recommended');
+      if (!data.results || data.results.length === 0) {
+        setSearchError(`No live jobs found for "${data.query}"${data.location ? ` in ${data.location}` : ''}. Try another location below.`);
+      }
+    } catch (err: any) {
+      setSearchError(`Could not find jobs for your CV: ${err.message || err}`);
+    } finally {
+      setCvLoading(false);
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (fromCv) runCvSearch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fromCv]);
 
   const loadJobs = async (countryFilter: string = selectedCountry) => {
     setLoading(true);
@@ -181,8 +218,9 @@ function JobsContent() {
         alignment: matchData.overall_alignment,
         match: matchData
       } : null);
-      setJobs(prev => prev.map(j => j.id === jobId ? { ...j, alignment: matchData.overall_alignment } : j));
-      setRecommendations(prev => prev.map(j => j.id === jobId ? { ...j, alignment: matchData.overall_alignment } : j));
+      setSelectedJob(prev => prev ? { ...prev, match_score: matchData.match_score ?? prev.match_score } : null);
+      setJobs(prev => prev.map(j => j.id === jobId ? { ...j, alignment: matchData.overall_alignment, match_score: matchData.match_score ?? j.match_score } : j));
+      setRecommendations(prev => prev.map(j => j.id === jobId ? { ...j, alignment: matchData.overall_alignment, match_score: matchData.match_score ?? j.match_score } : j));
     } catch (err) {
       console.error('Match evaluation failed:', err);
     } finally {
@@ -238,6 +276,13 @@ function JobsContent() {
 
           <div className="flex items-center gap-2">
             <button
+              onClick={() => { try { sessionStorage.removeItem('jobpilot_cv_profile'); } catch { /* ignore */ } runCvSearch(); }}
+              disabled={cvLoading}
+              className="px-3.5 py-2 rounded-xl bg-accent text-white text-xs font-bold flex items-center gap-1.5 hover:opacity-90 shadow-2xs disabled:opacity-60"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${cvLoading ? 'animate-spin' : ''}`} /> {cvLoading ? 'Searching live jobs…' : 'Find jobs for my CV'}
+            </button>
+            <button
               onClick={() => { loadRecommendations(); loadJobs(); }}
               className="px-3.5 py-2 rounded-xl bg-surface border border-line text-xs font-bold text-fg flex items-center gap-1.5 hover:bg-inset shadow-2xs hover:border-accent/50 transition-all cursor-pointer"
             >
@@ -255,10 +300,14 @@ function JobsContent() {
               </div>
               <div>
                 <span className="font-bold text-xs text-accent block">
-                  Active CV Alignment Search: <span className="text-fg underline">{searchQuery}</span>
+                  Jobs for your CV: <span className="text-fg underline">{cvInfo?.query || searchQuery}</span>
+                  {cvInfo?.location ? <> in <span className="text-fg underline">{cvInfo.location}</span></> : null}
                 </span>
                 <p className="text-[11px] text-fg-2">
-                  Displaying real-time market openings tailored directly to your generated resume profile.
+                  Live jobs from Google Jobs and LinkedIn, ranked by how many of each job&apos;s skills are in your CV.
+                  {cvInfo?.providers && Object.entries(cvInfo.providers).filter(([, s]: any) => !s.ok).length > 0 && (
+                    <> Unavailable right now: {Object.entries(cvInfo.providers).filter(([, s]: any) => !s.ok).map(([n]) => n.split(':')[0]).join(', ')}.</>
+                  )}
                 </p>
               </div>
             </div>
@@ -480,11 +529,18 @@ function JobsContent() {
                           <h3 className="text-sm font-bold text-fg hover:underline">
                             {job.title}
                           </h3>
-                          {job.match_score && (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-ok-soft text-ok border border-ok/30">
+                          {typeof job.match_score === 'number' ? (
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold border ${
+                              job.match_score >= 75 ? 'bg-ok-soft text-ok border-ok/30'
+                              : job.match_score >= 50 ? 'bg-accent-soft text-accent border-accent/30'
+                              : 'bg-pending-soft text-pending border-pending/30'}`}>
                               {job.match_score}% Match
                             </span>
-                          )}
+                          ) : viewMode === 'recommended' && job.alignment ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-mono border bg-surface-2 text-muted border-line">
+                              {job.alignment}
+                            </span>
+                          ) : null}
                         </div>
                         <div className="flex items-center gap-3 text-xs text-muted">
                           <span className="flex items-center gap-1 font-medium text-fg">
@@ -558,7 +614,7 @@ function JobsContent() {
                   <div className="space-y-1.5">
                     <div className="flex items-center gap-2">
                       <h2 className="text-lg font-bold text-fg">{selectedJob.title}</h2>
-                      {selectedJob.match_score && (
+                      {typeof selectedJob.match_score === 'number' && (
                         <span className="px-2.5 py-0.5 rounded text-xs font-mono font-bold bg-ok-soft text-ok border border-ok/30">
                           {selectedJob.match_score}% Match
                         </span>
@@ -659,7 +715,7 @@ function JobsContent() {
                       <div className="flex items-center justify-between">
                         <span className="font-semibold text-fg">Alignment Level</span>
                         <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-ok-soft text-ok border border-ok/30">
-                          {selectedJob.alignment || selectedJob.badge || 'Strong Alignment'}
+                          {selectedJob.alignment || selectedJob.badge || 'Not evaluated yet — run the match'}
                         </span>
                       </div>
                       <p className="text-[11px] text-muted">

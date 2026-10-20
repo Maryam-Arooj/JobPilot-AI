@@ -1,99 +1,75 @@
-from typing import Dict, Any, List
-from ..services.job_normalizer import normalize_job, deduplicate_jobs
+"""Job Agent — discovery: live search on SerpAPI (Google Jobs) and Apify (LinkedIn) in parallel."""
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional
+
 from ..services.agent_runs import run_log, run_step, tool_call
+from ..services.job_normalizer import deduplicate_jobs, normalize_job
+
+LOCATION_HINTS = {"pakistan": "Pakistan", "lahore": "Lahore, Pakistan", "karachi": "Karachi, Pakistan",
+                  "islamabad": "Islamabad, Pakistan", "remote": "Remote"}
+
 
 class JobDiscoveryAgent:
     def __init__(self):
         from ..providers.apify_job_source import ApifyJobSource
         from ..providers.serp_job_search import SerpJobSearchProvider
-        from ..providers.firecrawl_extractor import FirecrawlJobExtractor
         self.apify = ApifyJobSource()
         self.serp = SerpJobSearchProvider()
-        self.extractor = FirecrawlJobExtractor()
 
-    def discover_intent(self, natural_query: str, career_profile: Dict[str, Any]) -> Dict[str, Any]:
-        query_lower = natural_query.lower()
-        intent = {
-            "original_query": natural_query,
-            "search_queries": [natural_query],
-            "filters": {}
-        }
-        if "remote" in query_lower:
-            intent["filters"]["remote"] = True
-        if "pakistan" in query_lower:
-            intent["filters"]["location"] = "Pakistan"
-        if "lahore" in query_lower:
-            intent["filters"]["location"] = "Lahore, Pakistan"
-        if "matching my profile" in query_lower or "my profile" in query_lower:
-            title = (
-                career_profile.get("professional", {}).get("target_role", "") or
-                career_profile.get("professional", {}).get("title", "")
-            )
-            if title:
-                intent["search_queries"].append(f"{title} jobs")
-        return intent
+    def discover_intent(self, natural_query: str, career_profile: Dict[str, Any], location: Optional[str] = None) -> Dict[str, Any]:
+        q = natural_query.strip()
+        filters: Dict[str, Any] = {}
+        if location:
+            filters["location"] = location
+        else:
+            for word, loc in LOCATION_HINTS.items():
+                if word in q.lower():
+                    filters["location"] = loc
+        if "remote" in q.lower():
+            filters["remote"] = True
+        return {"original_query": natural_query, "search_queries": [q], "filters": filters}
 
-    def _enrich(self, job: Dict[str, Any]) -> Dict[str, Any]:
-        """Enrich job data with Firecrawl — skip if no URL to avoid timeouts."""
-        url = job.get("application_url") or job.get("url") or job.get("source_url")
-        if not url or "example.com" in url:
-            return job
-        try:
-            with tool_call("firecrawl:scrape", "job page") as tc:
-                extracted = self.extractor.extract(url)
-                method = extracted.get("extraction_method")
-                tc["summary"] = f"method={method}"
-                if method != "firecrawl":
-                    tc["status"] = "failed"
-                    tc["summary"] = f"Firecrawl unavailable, fallback used: {extracted.get('extraction_error') or 'no API key'}"
-            for k in ["title", "company", "description", "requirements", "location", "remote"]:
-                if extracted.get(k):
-                    job[k] = extracted[k]
-            job["extraction_provenance"] = {"source": "firecrawl", "url": url}
-        except Exception as e:
-            # Non-blocking — proceed with provider-supplied data
-            job["extraction_provenance"] = {"source": "provider_raw", "url": url}
-        return job
+    def _run_provider(self, name: str, provider, query: str, filters: Dict[str, Any]):
+        with tool_call(f"{name}", f"query={query!r}" + (f" location={filters.get('location')!r}" if filters.get("location") else "")) as tc:
+            jobs = provider.search(query, filters)
+            note = getattr(provider, "last_note", "")
+            tc["summary"] = f"{len(jobs)} jobs" + (f" ({note})" if note else "")
+        return jobs
 
-    def discover(self, natural_query: str, career_profile: Dict[str, Any]) -> Dict[str, Any]:
-        intent = self.discover_intent(natural_query, career_profile)
-        all_jobs = []
-        provider_errors = []
+    def discover(self, natural_query: str, career_profile: Dict[str, Any], location: Optional[str] = None) -> Dict[str, Any]:
+        intent = self.discover_intent(natural_query, career_profile, location)
+        query, filters = intent["search_queries"][0], intent["filters"]
+        providers = [("serpapi:google_jobs", self.serp), ("apify:linkedin_jobs", self.apify)]
+        ctx = contextvars.copy_context()
+        results: Dict[str, Any] = {}
+        with ThreadPoolExecutor(max_workers=len(providers)) as pool:
+            futures = {name: pool.submit(ctx.copy().run, self._run_provider, name, prov, query, filters)
+                       for name, prov in providers}
+            for name, fut in futures.items():
+                try:
+                    results[name] = fut.result()
+                except Exception as e:  # provider failure is reported, never hidden
+                    results[name] = e
+        all_jobs: List[Dict[str, Any]] = []
+        provider_errors: List[str] = []
+        provider_status: Dict[str, Any] = {}
+        for name, res in results.items():
+            if isinstance(res, Exception):
+                provider_errors.append(f"{name}: {str(res)[:200]}")
+                provider_status[name] = {"ok": False, "error": str(res)[:200]}
+                run_log("warn", f"{name} failed: {str(res)[:200]}")
+            else:
+                all_jobs.extend(res)
+                provider_status[name] = {"ok": True, "jobs": len(res)}
 
-        for q in intent["search_queries"]:
-            # Try SERP — real API call
-            try:
-                with tool_call("serpapi:google_jobs", f"query={q!r}") as tc:
-                    serp_results = self.serp.search(q, intent["filters"])
-                    tc["summary"] = f"query={q!r} -> {len(serp_results or [])} jobs"
-                if serp_results and isinstance(serp_results, list):
-                    all_jobs.extend(serp_results)
-            except Exception as e:
-                provider_errors.append(f"SERP: {str(e)}")
-
-            # Try Apify — real API call
-            try:
-                with tool_call("apify:linkedin_jobs", f"query={q!r}") as tc:
-                    apify_results = self.apify.search(q, intent["filters"])
-                    tc["summary"] = f"query={q!r} -> {len(apify_results or [])} items"
-                if apify_results and isinstance(apify_results, list):
-                    all_jobs.extend(apify_results)
-            except Exception as e:
-                provider_errors.append(f"Apify: {str(e)}")
-
-        # If both providers returned zero results AND there are errors, raise so frontend knows
-        if not all_jobs and provider_errors:
+        if not all_jobs and len(provider_errors) == len(providers):
             from fastapi import HTTPException
-            raise HTTPException(
-                status_code=503,
-                detail=f"No jobs returned from live providers. Errors: {'; '.join(provider_errors)}"
-            )
+            raise HTTPException(status_code=503, detail=f"No jobs returned from live providers. Errors: {'; '.join(provider_errors)}")
 
-        for err in provider_errors:
-            run_log("warn", err)
-        run_step("Enrich and normalise jobs", 2, 3)
-        # If providers returned nothing but no errors (empty results), return empty — no mock
-        enriched = [self._enrich(j) for j in all_jobs]
-        normalized = [normalize_job(j, j.get("source", "serp")) for j in enriched]
+        run_step("Normalise and remove duplicates", 2, 3)
+        normalized = [normalize_job(j, j.get("source", "provider")) for j in all_jobs]
+        normalized = [j for j in normalized if j["title"] and j["company"]]
         deduped = deduplicate_jobs(normalized)
-        return {"intent": intent, "results": deduped, "provider_errors": provider_errors}
+        run_log("info", f"{len(all_jobs)} jobs from providers, {len(deduped)} after removing duplicates")
+        return {"intent": intent, "results": deduped, "provider_errors": provider_errors, "provider_status": provider_status}

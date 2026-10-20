@@ -534,7 +534,11 @@ export default function DocumentConfirmationPage() {
                   <ArrowRight className="w-3.5 h-3.5 text-muted" />
                 </Link>
                 <Link
-                  href="/jobs"
+                  href="/jobs?from=cv"
+                  onClick={() => {
+                    // Lets the Job Agent use this CV right away, even before it is saved to the profile.
+                    try { if (parsedProfile) sessionStorage.setItem('jobpilot_cv_profile', JSON.stringify(parsedProfile)); } catch { /* ignore */ }
+                  }}
                   className="px-4 py-2.5 rounded-xl bg-surface border border-line hover:border-accent/60 text-fg font-semibold text-xs transition-colors flex items-center gap-1.5 shadow-xs"
                 >
                   <Search className="w-4 h-4 text-fg" />
