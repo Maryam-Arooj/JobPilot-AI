@@ -25,6 +25,11 @@ import {
 } from 'lucide-react';
 
 interface CompanyResearch {
+  status?: 'found' | 'not_found' | 'unavailable' | 'not_researched' | 'unverified';
+  message?: string;
+  official_website?: string;
+  sources?: { source_url: string; provider: string }[];
+  claims?: { claim_text: string; source_url: string; fact_type: string }[];
   overview?: string;
   industry?: string;
   products_services?: string[];
@@ -44,6 +49,7 @@ interface ApplicationData {
     remote: boolean;
     salary?: string;
     application_url?: string;
+    contact_emails?: string[];
   };
   company: {
     id: number;
@@ -61,6 +67,8 @@ interface ApplicationData {
     referenced_profile_facts?: string[];
     referenced_job_requirements?: string[];
     referenced_company_claims?: string[];
+    removed_claims?: string[];
+    method?: 'ai' | 'template';
   };
   gmail_draft?: {
     draft_id: string;
@@ -164,27 +172,17 @@ function ApplicationStudioContent() {
       const fullApp = await apiFetch(`/applications/${appId}`);
       setSelectedApp(fullApp);
       
-      // Auto-trigger Company Research if not already conducted
-      if (!fullApp.company?.research && fullApp.company?.id) {
+      // Run company research once (the backend caches it per company)
+      const researchStatus = fullApp.company?.research?.status;
+      if (fullApp.company?.id && (!researchStatus || researchStatus === 'not_researched')) {
         setIsResearchingCompany(true);
-        apiFetch(`/companies/${fullApp.company.id}/research`, { method: 'POST' })
+        apiFetch(`/companies/${fullApp.company.id}/research?force=false`, { method: 'POST' })
           .then((resData) => {
             setSelectedApp(prev => prev && prev.id === appId ? {
-              ...prev,
-              company: {
-                ...prev.company,
-                research: {
-                  overview: resData.overview,
-                  industry: resData.industry,
-                  products_services: resData.products_services,
-                  technology_info: resData.technology_info,
-                  mission_info: resData.mission_info,
-                  careers_url: resData.careers_url
-                }
-              }
+              ...prev, company: { ...prev.company, official_website: resData.official_website, research: resData }
             } : prev);
           })
-          .catch((err) => console.warn('Auto company research notice:', err))
+          .catch((err) => console.warn('Company research notice:', err))
           .finally(() => setIsResearchingCompany(false));
       }
 
@@ -199,11 +197,8 @@ function ApplicationStudioContent() {
         generateEmailForApp(fullApp.id, fullApp.resume_version_id);
       }
 
-      // Pre-populate default draft recipient
-      if (fullApp.job?.company) {
-        const cleanComp = fullApp.job.company.toLowerCase().replace(/[^a-z0-9]/g, '');
-        setDraftRecipient(`careers@${cleanComp || 'targetcompany'}.com`);
-      }
+      // Only a real address written in the job posting is suggested; nothing is guessed
+      setDraftRecipient(fullApp.job?.contact_emails?.[0] || '');
       return fullApp;
     } catch (err: any) {
       console.error(`Failed to fetch full application ${appId}:`, err);
@@ -384,18 +379,7 @@ function ApplicationStudioContent() {
         method: 'POST'
       });
       setSelectedApp(prev => prev ? {
-        ...prev,
-        company: {
-          ...prev.company,
-          research: {
-            overview: data.overview,
-            industry: data.industry,
-            products_services: data.products_services,
-            technology_info: data.technology_info,
-            mission_info: data.mission_info,
-            careers_url: data.careers_url
-          }
-        }
+        ...prev, company: { ...prev.company, official_website: data.official_website, research: data }
       } : null);
     } catch (err) {
       console.error('Company research failed:', err);
@@ -600,31 +584,54 @@ function ApplicationStudioContent() {
                   </button>
                 </div>
 
-                {selectedApp.company?.research ? (
-                  <div className="space-y-3 text-xs text-fg-2 leading-relaxed">
-                    <div>
-                      <span className="text-fg font-bold block mb-1">Company Overview</span>
-                      <p className="bg-inset p-3 rounded-xl border border-line">{selectedApp.company.research.overview}</p>
-                    </div>
-
-                    {selectedApp.company.research.technology_info && selectedApp.company.research.technology_info.length > 0 && (
-                      <div>
-                        <span className="text-fg font-bold block mb-1">Verified Tech Stack</span>
-                        <div className="flex flex-wrap gap-1.5">
-                          {selectedApp.company.research.technology_info.map((tech, idx) => (
-                            <span key={idx} className="bg-accent-soft text-accent font-semibold px-2.5 py-0.5 rounded-lg border border-accent/30 text-xs">
-                              {tech}
-                            </span>
-                          ))}
-                        </div>
+                {(() => {
+                  const r = selectedApp.company?.research;
+                  if (isResearchingCompany) {
+                    return <div className="text-xs text-muted py-4 text-center bg-inset rounded-xl border border-dashed border-line-strong">Finding the official website and reading it...</div>;
+                  }
+                  if (!r || r.status === 'not_researched') {
+                    return <div className="text-xs text-muted py-4 text-center bg-inset rounded-xl border border-dashed border-line-strong">Click &quot;Research Live&quot; to read the company&apos;s own website.</div>;
+                  }
+                  if (r.status !== 'found') {
+                    return (
+                      <div className="text-xs text-fg-2 p-3 bg-inset rounded-xl border border-dashed border-line-strong space-y-1">
+                        <span className="font-bold text-fg block">No company facts used</span>
+                        <p>{r.message}</p>
+                        {r.official_website && <a href={r.official_website} target="_blank" rel="noreferrer" className="text-accent underline break-all">{r.official_website}</a>}
                       </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="text-xs text-muted py-4 text-center bg-inset rounded-xl border border-dashed border-line-strong">
-                    Click &quot;Research Live&quot; to fetch real-time company intelligence.
-                  </div>
-                )}
+                    );
+                  }
+                  return (
+                    <div className="space-y-3 text-xs text-fg-2 leading-relaxed">
+                      {r.overview && (
+                        <div>
+                          <span className="text-fg font-bold block mb-1">Overview</span>
+                          <p className="bg-inset p-3 rounded-xl border border-line">{r.overview}</p>
+                        </div>
+                      )}
+                      {[['Products & services', r.products_services], ['Technology', r.technology_info]].map(([label, items]) =>
+                        Array.isArray(items) && items.length > 0 ? (
+                          <div key={label as string}>
+                            <span className="text-fg font-bold block mb-1">{label as string}</span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {(items as string[]).map((t, idx) => (
+                                <span key={idx} className="bg-accent-soft text-accent font-semibold px-2.5 py-0.5 rounded-lg border border-accent/30 text-xs">{t}</span>
+                              ))}
+                            </div>
+                          </div>
+                        ) : null)}
+                      {r.mission_info && <p><span className="text-fg font-bold">Mission: </span>{r.mission_info}</p>}
+                      {r.sources && r.sources.length > 0 && (
+                        <div className="text-[11px] text-muted">
+                          Source: {r.sources.map((src, i) => (
+                            <a key={i} href={src.source_url} target="_blank" rel="noreferrer" className="text-accent underline break-all mr-2">{src.source_url}</a>
+                          ))}
+                          <span className="block">Read from the company&apos;s own website; every line above appears on that page.</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Card 3: Resume Attachment */}
@@ -710,6 +717,18 @@ function ApplicationStudioContent() {
                     className="w-full bg-inset border border-line-strong rounded-xl p-3.5 text-xs text-fg leading-relaxed font-sans focus:outline-none focus:border-accent"
                   />
                 </div>
+
+                {selectedApp.email_version?.method && (
+                  <p className="text-[11px] text-muted">
+                    {selectedApp.email_version.method === 'ai' ? 'Written by AI from your CV, the job and the company website, then fact-checked.' : 'AI was unavailable, so a plain template filled with your real CV facts was used.'}
+                  </p>
+                )}
+                {selectedApp.email_version?.removed_claims && selectedApp.email_version.removed_claims.length > 0 && (
+                  <div className="p-3 bg-bad-soft border border-bad/30 rounded-xl text-[11px] space-y-1">
+                    <span className="font-bold text-bad block">Removed by the fact checker ({selectedApp.email_version.removed_claims.length})</span>
+                    {selectedApp.email_version.removed_claims.map((c, i) => <p key={i} className="text-fg-2">{c}</p>)}
+                  </div>
+                )}
 
                 {/* Grounded Fact Provenance */}
                 {selectedApp.email_version?.referenced_profile_facts && selectedApp.email_version.referenced_profile_facts.length > 0 && (
@@ -829,15 +848,15 @@ function ApplicationStudioContent() {
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-accent text-xs">Sender Account (From)</span>
                   <span className="text-[10px] bg-surface border border-accent/30 text-accent font-bold px-2 py-0.5 rounded-md">
-                    Logged-in Account
+                    Connected Gmail
                   </span>
                 </div>
                 <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
                   <Mail className="w-3.5 h-3.5 text-accent" />
-                  <span>{currentUserEmail || 'Authenticated User'}</span>
+                  <span>{gmailEmail || (gmailConnected ? 'Your connected Gmail account' : 'Gmail not connected')}</span>
                 </div>
                 <p className="text-[11px] text-muted">
-                  This application outreach is authored with this email as your official signature.
+                  The draft is saved in this Gmail account and sent from it only when you press Send in Gmail.
                 </p>
               </div>
 
@@ -848,9 +867,14 @@ function ApplicationStudioContent() {
                   type="email"
                   value={draftRecipient}
                   onChange={(e) => setDraftRecipient(e.target.value)}
-                  placeholder="e.g. recruiting@targetcompany.com"
+                  placeholder="Paste the recruiter's real email address"
                   className="w-full bg-inset border border-line-strong rounded-xl p-2.5 text-xs text-fg focus:outline-none focus:border-accent"
                 />
+                <p className="text-[11px] text-muted">
+                  {selectedApp?.job?.contact_emails?.length
+                    ? `Found in the job posting: ${selectedApp.job.contact_emails.join(', ')}`
+                    : 'No contact email is written in this job posting. Use the address from the job page or the recruiter.'}
+                </p>
               </div>
 
               <div className="p-3 bg-inset rounded-xl border border-line space-y-1">

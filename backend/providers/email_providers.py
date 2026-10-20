@@ -74,11 +74,24 @@ class GmailEmailProvider(EmailProvider):
         if not recipient or "@" not in recipient:
             raise ValueError("Valid email recipient is required before creating draft")
 
-        from_address = sender_email or "applicant@yourcareerbuddy.com"
+        # Check if user has an active Gmail OAuth connection in database
+        gmail_conn = None
+        if db_session:
+            from ..models.applications import GmailConnection
+            gmail_conn = db_session.query(GmailConnection).filter(
+                GmailConnection.user_id == user_id,
+                GmailConnection.is_connected == True
+            ).first()
 
-        # Build RFC 2822 MIME message
+        if not gmail_conn or not gmail_conn.access_token:
+            raise GmailNotConnectedError("Gmail is not connected for this user")
+
+        # Gmail sends from the connected account; never a made-up address
+        from_address = (gmail_conn.email or "").strip() or (sender_email or "").strip()
+
         message = MIMEMultipart()
-        message['From'] = from_address
+        if from_address:
+            message['From'] = from_address
         message['To'] = recipient
         message['Subject'] = subject
         message.attach(MIMEText(body, 'plain', 'utf-8'))
@@ -91,18 +104,6 @@ class GmailEmailProvider(EmailProvider):
 
         raw_bytes = message.as_bytes()
         raw_b64 = base64.urlsafe_b64encode(raw_bytes).decode('utf-8')
-
-        # Check if user has an active Gmail OAuth connection in database
-        gmail_conn = None
-        if db_session:
-            from ..models.applications import GmailConnection
-            gmail_conn = db_session.query(GmailConnection).filter(
-                GmailConnection.user_id == user_id,
-                GmailConnection.is_connected == True
-            ).first()
-
-        if not gmail_conn or not gmail_conn.access_token:
-            raise GmailNotConnectedError("Gmail is not connected for this user")
 
         headers = {
             "Authorization": f"Bearer {gmail_conn.access_token}",
@@ -165,6 +166,6 @@ class GmailEmailProvider(EmailProvider):
             "subject": subject,
             "has_attachment": bool(attachment_bytes),
             "attachment_name": attachment_filename,
-            "message": f"Gmail draft created live in your account ({from_address})!"
+            "message": f"Gmail draft created in {from_address or 'your Gmail account'}. Open Gmail Drafts to review and send it."
         }
 

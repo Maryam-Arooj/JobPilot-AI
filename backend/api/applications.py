@@ -1,3 +1,4 @@
+import re
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional, List, Dict, Any
@@ -10,13 +11,11 @@ from ..models.career_profile import CareerProfile, User
 from ..models.resume import ResumeVersion, ResumeDocument
 from ..services.auth_middleware import get_current_user_id
 from ..ai_agents.application_email_agent import ApplicationEmailAgent
-from ..ai_agents.company_research_agent import CompanyResearchAgent
-from ..ai_agents.job_analysis import JobAnalysisAgent
-from ..ai_agents.job_match import JobMatchAgent
 from ..providers.email_providers import GmailEmailProvider, GmailNotConnectedError, GmailDraftError
 from ..services.email_service import EmailSenderService, SMTPNotConfiguredError, SMTPDeliveryError
 from ..services.resume_exporter import export_resume_pdf, export_resume_docx
 from ..services.agent_runs import track_run
+from ..services import company_research as cr
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 
@@ -38,6 +37,60 @@ def _build_resume_attachment(db: Session, app_obj: Application, user_id: int, fm
         return export_resume_docx(rv.content_snapshot), f"{base_name}.docx"
     except Exception:
         raise HTTPException(status_code=500, detail="Resume attachment could not be generated")
+
+
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+
+
+def contact_emails(job: Optional[Job]) -> List[str]:
+    """Real contact addresses written in the job posting itself (never guessed)."""
+    if not job:
+        return []
+    text = " ".join(str(x) for x in [job.description or "", *(job.requirements or [])])
+    found = []
+    for e in EMAIL_RE.findall(text):
+        e = e.strip(".").lower()
+        if e not in found and not e.endswith((".png", ".jpg")) and "example." not in e:
+            found.append(e)
+    return found[:3]
+
+
+def _profile_dict(db: Session, user_id: int) -> Dict[str, Any]:
+    """The user's real profile. The name is never guessed from the email address."""
+    user_record = db.query(User).filter(User.id == user_id).first()
+    profile = db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first()
+    personal = dict(profile.personal or {}) if (profile and profile.personal) else {}
+    if not personal.get("email") and user_record:
+        personal["email"] = user_record.email
+    return {
+        "personal": personal,
+        "professional": (profile.professional or {}) if profile else {},
+        "skills": (profile.skills or {}) if profile else {},
+        "experience": (profile.experience or []) if profile else [],
+        "projects": (profile.projects or []) if profile else [],
+        "education": (profile.education or []) if profile else [],
+    }
+
+
+def _job_dict(job: Job) -> Dict[str, Any]:
+    return {"title": job.title, "company": job.company, "location": job.location, "description": job.description,
+            "requirements": job.requirements or [], "technologies": job.technologies or []}
+
+
+def _write_email(db: Session, run, app_obj: Application, job: Job, comp: Optional[Company], tone: str) -> Dict[str, Any]:
+    profile_dict = _profile_dict(db, app_obj.user_id)
+    research = cr.payload(db, comp, cr.latest(db, comp.id)) if comp else {}
+    if research.get("status") != "found":
+        run.log("info", research.get("message") or "No company research; the email uses only the CV and the job.")
+    email_res = ApplicationEmailAgent().generate_email(career_profile=profile_dict, job=_job_dict(job),
+                                                       company_research=research, tone=tone)
+    db.add(ApplicationEmailVersion(
+        application_id=app_obj.id, tone=email_res["tone"], subject=email_res["subject"], body=email_res["body"],
+        greeting=email_res["greeting"], closing=email_res["closing"],
+        referenced_profile_facts=email_res["referenced_profile_facts"],
+        referenced_job_requirements=email_res["referenced_job_requirements"],
+        referenced_company_claims=email_res["referenced_company_claims"]))
+    return email_res
 
 class ApplicationCreate(BaseModel):
     job_id: int
@@ -74,64 +127,17 @@ def create_application(
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
 
-        company_id = req.company_id
-        company_name = (job.company or "Technology Organization").strip()
-        if not company_id:
-            comp = db.query(Company).filter(Company.name == company_name).first()
-            if not comp:
-                comp = Company(
-                    name=company_name,
-                    official_website=job.source_url or f"https://www.{company_name.lower().replace(' ', '')}.com"
-                )
-                db.add(comp)
-                db.flush()
-            company_id = comp.id
-        else:
-            comp = db.query(Company).filter(Company.id == company_id).first()
+        comp = (db.query(Company).filter(Company.id == req.company_id).first() if req.company_id
+                else cr.get_or_create_company(db, job))
+        company_id = comp.id if comp else None
 
         run.step("Company research", 1, 3)
-        # 1. Autonomous Company Research
-        res_record = db.query(CompanyResearch).filter(CompanyResearch.company_id == company_id).order_by(CompanyResearch.id.desc()).first()
-        company_research_dict = {}
-        if not res_record and comp:
-            try:
-                comp_agent = CompanyResearchAgent()
-                res_data = comp_agent.research(
-                    company_name=comp.name,
-                    official_website=comp.official_website,
-                    job_url=job.source_url or job.application_url
-                )
-                res_record = CompanyResearch(
-                    company_id=comp.id,
-                    overview=res_data.get("overview"),
-                    products_services=res_data.get("products_services", []),
-                    technology_info=res_data.get("technology_info", []),
-                    engineering_info=res_data.get("engineering_info", ""),
-                    mission_info=res_data.get("mission_info", ""),
-                    recent_news=res_data.get("recent_news", []),
-                    careers_url=res_data.get("careers_url", ""),
-                    confidence_status="verified"
-                )
-                db.add(res_record)
-                db.flush()
-                company_research_dict = {
-                    "company_name": comp.name,
-                    "overview": res_record.overview,
-                    "industry": comp.industry or "Technology",
-                    "technology_info": res_record.technology_info or [],
-                    "mission_info": res_record.mission_info or ""
-                }
-            except Exception as e:
-                print(f"Company research notice: {e}")
-                run.warn(f"Company research failed: {e}")
-        elif res_record and comp:
-            company_research_dict = {
-                "company_name": comp.name,
-                "overview": res_record.overview,
-                "industry": comp.industry or "Technology",
-                "technology_info": res_record.technology_info or [],
-                "mission_info": res_record.mission_info or ""
-            }
+        try:
+            rec = cr.research_and_save(db, comp, job.application_url or job.source_url) if comp else None
+            research_status = cr.payload(db, comp, rec)["status"] if comp else "not_researched"
+        except Exception as e:
+            run.warn(f"Company research failed: {e}")
+            research_status = "unavailable"
 
         run.step("Create application workspace", 2, 3)
         # 2. Create Application Record
@@ -152,67 +158,16 @@ def create_application(
         ))
 
         run.step("Draft application email", 3, 3)
-        # 3. Autonomous Grounded Email Drafting based on Company Research & Job Match
         try:
-            user_record = db.query(User).filter(User.id == user_id).first()
-            profile = db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first()
-        
-            user_account_email = user_record.email if user_record else ""
-            personal_data = dict(profile.personal or {}) if (profile and profile.personal) else {}
-            personal_data["email"] = user_account_email or personal_data.get("email", "")
-            if not personal_data.get("name"):
-                personal_data["name"] = user_account_email.split("@")[0].replace(".", " ").capitalize() if user_account_email else "Applicant"
-
-            profile_dict = {
-                "personal": personal_data,
-                "professional": profile.professional or {} if profile else {},
-                "skills": profile.skills or {} if profile else {},
-                "experience": profile.experience or [] if profile else []
-            }
-
-            job_dict = {
-                "title": job.title,
-                "company": job.company,
-                "location": job.location,
-                "description": job.description
-            }
-
-            analysis_agent = JobAnalysisAgent()
-            job_analysis = analysis_agent.analyze({"requirements": job.requirements, "technologies": job.technologies})
-
-            match_agent = JobMatchAgent()
-            job_match = match_agent.match(profile_dict, job_dict, job_analysis)
-
-            email_agent = ApplicationEmailAgent()
-            email_res = email_agent.generate_email(
-                career_profile=profile_dict,
-                job=job_dict,
-                job_analysis=job_analysis,
-                job_match=job_match,
-                company_research=company_research_dict,
-                resume_version={},
-                tone="Formal"
-            )
-
-            email_ver = ApplicationEmailVersion(
-                application_id=app_obj.id,
-                tone=email_res.get("tone", "Formal"),
-                subject=email_res.get("subject", f"Application for {job.title} - {profile_dict.get('personal', {}).get('name', 'Alex Chen')}"),
-                body=email_res.get("body", ""),
-                greeting=email_res.get("greeting", "Dear Hiring Team,"),
-                closing=email_res.get("closing", "Sincerely,"),
-                referenced_profile_facts=email_res.get("referenced_profile_facts", []),
-                referenced_job_requirements=email_res.get("referenced_job_requirements", []),
-                referenced_company_claims=email_res.get("referenced_company_claims", [])
-            )
-            db.add(email_ver)
+            email_res = _write_email(db, run, app_obj, job, comp, "Formal")
         except Exception as e:
-            print(f"Auto email drafting notice: {e}")
             run.warn(f"Email drafting failed: {e}")
+            email_res = {}
 
         db.commit()
         run.set_output({"application_id": app_obj.id, "job": f"{job.title} at {job.company}",
-                        "company_research": bool(company_research_dict)})
+                        "company_research": research_status, "email_method": email_res.get("method"),
+                        "removed_claims": len(email_res.get("removed_claims") or [])})
         return get_application(app_obj.id, user_id, db)
 
 @router.get("")
@@ -249,19 +204,7 @@ def get_application(
     job = db.query(Job).filter(Job.id == app_obj.job_id).first()
     comp = db.query(Company).filter(Company.id == app_obj.company_id).first() if app_obj.company_id else None
     
-    # Load company research if present
-    research = None
-    if comp:
-        research_record = db.query(CompanyResearch).filter(CompanyResearch.company_id == comp.id).order_by(CompanyResearch.id.desc()).first()
-        if research_record:
-            research = {
-                "overview": research_record.overview,
-                "industry": comp.industry or "Technology",
-                "products_services": research_record.products_services,
-                "technology_info": research_record.technology_info,
-                "mission_info": research_record.mission_info,
-                "careers_url": research_record.careers_url
-            }
+    research = cr.payload(db, comp, cr.latest(db, comp.id)) if comp else None
 
     # Load latest email version
     latest_email = db.query(ApplicationEmailVersion).filter(ApplicationEmailVersion.application_id == app_id).order_by(ApplicationEmailVersion.id.desc()).first()
@@ -280,12 +223,13 @@ def get_application(
             "location": job.location if job else "",
             "remote": job.remote if job else False,
             "salary": job.salary if job else None,
-            "application_url": job.application_url if job else ""
+            "application_url": job.application_url if job else "",
+            "contact_emails": contact_emails(job)
         },
         "company": {
             "id": comp.id if comp else None,
             "name": comp.name if comp else (job.company if job else "Company"),
-            "official_website": comp.official_website if comp else "",
+            "official_website": (comp.official_website or "") if comp else "",
             "research": research
         },
         "resume_version_id": app_obj.resume_version_id,
@@ -322,83 +266,20 @@ def generate_application_email(
         if req.resume_version_id:
             app_obj.resume_version_id = req.resume_version_id
 
-        # Load canonical facts
-        user_record = db.query(User).filter(User.id == user_id).first()
-        profile = db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first()
-    
-        user_account_email = user_record.email if user_record else ""
-        personal_data = dict(profile.personal or {}) if (profile and profile.personal) else {}
-        personal_data["email"] = user_account_email or personal_data.get("email", "")
-        if not personal_data.get("name"):
-            personal_data["name"] = user_account_email.split("@")[0].replace(".", " ").capitalize() if user_account_email else "Applicant"
-
-        profile_dict = {
-            "personal": personal_data,
-            "professional": profile.professional or {} if profile else {},
-            "skills": profile.skills or {} if profile else {},
-            "experience": profile.experience or [] if profile else []
-        }
-
         job = db.query(Job).filter(Job.id == app_obj.job_id).first()
-        job_dict = {
-            "title": job.title,
-            "company": job.company,
-            "location": job.location,
-            "description": job.description
-        }
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        comp = db.query(Company).filter(Company.id == app_obj.company_id).first() if app_obj.company_id else None
 
-        run.step("Analyse job and match profile", 1, 3)
-        # Job analysis & match
-        analysis_agent = JobAnalysisAgent()
-        job_analysis = analysis_agent.analyze({"requirements": job.requirements, "technologies": job.technologies})
+        run.step("Load company research", 1, 2)
+        if comp and cr.latest(db, comp.id) is None:
+            try:
+                cr.research_and_save(db, comp, job.application_url or job.source_url)
+            except Exception as e:
+                run.warn(f"Company research failed: {e}")
 
-        match_agent = JobMatchAgent()
-        job_match = match_agent.match(profile_dict, job_dict, job_analysis)
-
-        run.step("Load company research", 2, 3)
-        # Company research
-        company_research = {}
-        if app_obj.company_id:
-            res_record = db.query(CompanyResearch).filter(CompanyResearch.company_id == app_obj.company_id).order_by(CompanyResearch.id.desc()).first()
-            if res_record:
-                company_research = {
-                    "company_name": job.company,
-                    "industry": "Technology",
-                    "technology_info": res_record.technology_info or []
-                }
-            else:
-                comp_agent = CompanyResearchAgent()
-                res_data = comp_agent.research(job.company)
-                company_research = {
-                    "company_name": job.company,
-                    "industry": res_data.get("industry", "Technology"),
-                    "technology_info": res_data.get("technology_info", [])
-                }
-
-        run.step("Write email", 3, 3)
-        email_agent = ApplicationEmailAgent()
-        email_res = email_agent.generate_email(
-            career_profile=profile_dict,
-            job=job_dict,
-            job_analysis=job_analysis,
-            job_match=job_match,
-            company_research=company_research,
-            resume_version={},
-            tone=req.tone
-        )
-
-        email_ver = ApplicationEmailVersion(
-            application_id=app_id,
-            tone=email_res["tone"],
-            subject=email_res["subject"],
-            body=email_res["body"],
-            greeting=email_res["greeting"],
-            closing=email_res["closing"],
-            referenced_profile_facts=email_res["referenced_profile_facts"],
-            referenced_job_requirements=email_res["referenced_job_requirements"],
-            referenced_company_claims=email_res["referenced_company_claims"]
-        )
-        db.add(email_ver)
+        run.step("Write and fact-check email", 2, 2)
+        email_res = _write_email(db, run, app_obj, job, comp, req.tone)
 
         app_obj.status = "DRAFT_READY"
         db.add(ApplicationEvent(
@@ -408,6 +289,7 @@ def generate_application_email(
         ))
         db.commit()
         run.set_output({"subject": email_res.get("subject"), "tone": email_res.get("tone"),
+                        "method": email_res.get("method"), "removed_claims": len(email_res.get("removed_claims") or []),
                         "body_chars": len(email_res.get("body", ""))})
         return email_res
 
@@ -489,7 +371,7 @@ def create_gmail_draft(
         if not req.user_confirmed:
             raise HTTPException(status_code=400, detail="Explicit user approval (user_confirmed=True) is mandatory before creating Gmail draft")
 
-        if not req.recipient or "@" not in req.recipient:
+        if not req.recipient or not EMAIL_RE.fullmatch(req.recipient.strip()):
             raise HTTPException(status_code=400, detail="Valid recipient email address is required")
 
         app_obj = db.query(Application).filter(Application.id == app_id, Application.user_id == user_id).first()
@@ -504,8 +386,7 @@ def create_gmail_draft(
             if not attachment_bytes:
                 run.warn("No resume version is linked to this application, so no attachment was added")
 
-        user = db.query(User).filter(User.id == user_id).first()
-        sender_email = user.email if user else "applicant@yourcareerbuddy.com"
+        sender_email = None  # the draft is created in, and sent from, the connected Gmail account
 
         run.step("Create draft in Gmail", 2, 2)
         provider = GmailEmailProvider()

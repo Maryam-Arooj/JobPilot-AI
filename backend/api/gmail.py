@@ -8,6 +8,36 @@ from ..services.auth_middleware import get_current_user_id
 
 logger = logging.getLogger(__name__)
 
+STATE_TTL = 15 * 60  # seconds
+
+
+def _secret() -> bytes:
+    return os.getenv("SECRET_KEY", "change-me").encode()
+
+
+def make_state(user_id: int, now: float = None) -> str:
+    """Signed OAuth state: user id + expiry + HMAC, so nobody can connect their Gmail to another account."""
+    import base64, hashlib, hmac, secrets, time
+    exp = int((now or time.time()) + STATE_TTL)
+    payload = f"{user_id}.{exp}.{secrets.token_hex(8)}"
+    sig = hmac.new(_secret(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return base64.urlsafe_b64encode(f"{payload}.{sig}".encode()).decode().rstrip("=")
+
+
+def read_state(state: str, now: float = None) -> int:
+    import base64, hashlib, hmac, time
+    try:
+        raw = base64.urlsafe_b64decode(state + "=" * (-len(state) % 4)).decode()
+        uid, exp, nonce, sig = raw.split(".")
+        good = hmac.new(_secret(), f"{uid}.{exp}.{nonce}".encode(), hashlib.sha256).hexdigest()[:32]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state. Please click Connect Gmail again.")
+    if not hmac.compare_digest(sig, good):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state. Please click Connect Gmail again.")
+    if int(exp) < (now or time.time()):
+        raise HTTPException(status_code=400, detail="The Gmail connect link expired. Please click Connect Gmail again.")
+    return int(uid)
+
 router = APIRouter(prefix="/gmail", tags=["gmail"])
 
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "")
@@ -56,7 +86,7 @@ def oauth_start(user_id: int = Depends(get_current_user_id)):
         )
 
     import urllib.parse
-    scope = "https://www.googleapis.com/auth/gmail.compose"
+    scope = "openid email https://www.googleapis.com/auth/gmail.compose"
     auth_url = (
         "https://accounts.google.com/o/oauth2/v2/auth?"
         + urllib.parse.urlencode({
@@ -66,7 +96,7 @@ def oauth_start(user_id: int = Depends(get_current_user_id)):
             "scope": scope,
             "access_type": "offline",
             "prompt": "consent",
-            "state": str(user_id),
+            "state": make_state(user_id),
         })
     )
     return {"oauth_url": auth_url}
@@ -79,10 +109,7 @@ def oauth_callback(code: str, state: str = None, db: Session = Depends(get_db)):
     if not state:
         raise HTTPException(status_code=400, detail="OAuth state missing (required for user identification)")
     
-    try:
-        user_id = int(state)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid OAuth state parameter")
+    user_id = read_state(state)
 
     client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
     if not GOOGLE_CLIENT_ID or not client_secret:
@@ -101,6 +128,7 @@ def oauth_callback(code: str, state: str = None, db: Session = Depends(get_db)):
             "redirect_uri": GOOGLE_REDIRECT_URI,
             "grant_type": "authorization_code",
         },
+        timeout=20,
     )
 
     if token_response.status_code != 200:
@@ -115,13 +143,21 @@ def oauth_callback(code: str, state: str = None, db: Session = Depends(get_db)):
     refresh_token = token_data.get("refresh_token", "")
 
     # Get user's Gmail address
-    userinfo_resp = req.get(
-        "https://www.googleapis.com/oauth2/v2/userinfo",
-        headers={"Authorization": f"Bearer {access_token}"},
-    )
     email = ""
-    if userinfo_resp.status_code == 200:
-        email = userinfo_resp.json().get("email", "")
+    for url, key in (("https://openidconnect.googleapis.com/v1/userinfo", "email"),
+                     ("https://gmail.googleapis.com/gmail/v1/users/me/profile", "emailAddress")):
+        try:
+            r = req.get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=15)
+            if r.status_code == 200 and r.json().get(key):
+                email = r.json()[key]
+                break
+        except Exception:
+            logger.warning("Could not read the Gmail address from %s", url)
+    if not email:
+        logger.warning("Gmail connected but the address could not be read; reconnect to show it.")
+    from datetime import datetime, timedelta, timezone
+    expiry = (datetime.now(timezone.utc) + timedelta(seconds=int(token_data["expires_in"]))
+              if token_data.get("expires_in") else None)
 
     conn = db.query(GmailConnection).filter(GmailConnection.user_id == user_id).first()
     if not conn:
@@ -131,12 +167,14 @@ def oauth_callback(code: str, state: str = None, db: Session = Depends(get_db)):
             is_connected=True,
             access_token=access_token,
             refresh_token=refresh_token,
+            token_expiry=expiry,
         )
         db.add(conn)
     else:
         conn.is_connected = True
-        conn.email = email
+        conn.email = email or conn.email
         conn.access_token = access_token
+        conn.token_expiry = expiry
         if refresh_token:
             conn.refresh_token = refresh_token
 
