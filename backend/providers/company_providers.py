@@ -329,6 +329,26 @@ def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
             tc["summary"] = f"{len(hits)} published email(s)"
         return ("hunter", domain, hits, [])
 
+    tomba_key, tomba_secret = os.getenv("TOMBA_API_KEY", ""), os.getenv("TOMBA_SECRET", "")
+
+    def tomba_job():
+        with tool_call("tomba:domain-search", domain) as tc:
+            resp = requests.get("https://api.tomba.io/v1/domain-search", timeout=15, params={"domain": domain},
+                                headers={"X-Tomba-Key": tomba_key, "X-Tomba-Secret": tomba_secret})
+            if resp.status_code != 200:
+                raise RuntimeError(f"Tomba returned HTTP {resp.status_code}")
+            hits = []
+            for e in ((resp.json() or {}).get("data") or {}).get("emails") or []:
+                addr = str(e.get("email") or e.get("value") or "").lower()
+                if not addr or not _email_kind(addr) or str((e.get("verification") or {}).get("status")) == "invalid":
+                    continue
+                dept = " ".join(str(e.get(k) or "") for k in ("department", "position")).lower()
+                hiring = any(w in dept for w in ("hr", "human resources", "recruit", "talent", "hiring", "people"))
+                src = next((x.get("uri") for x in e.get("sources") or [] if isinstance(x, dict) and x.get("uri")), "tomba.io")
+                hits.append((addr, src, "hiring" if hiring else None))
+            tc["summary"] = f"{len(hits)} published email(s)"
+        return ("hunter", domain, hits, [])
+
     def web_search_job():
         """Firecrawl search: pages anywhere on the web that mention the company's contact email."""
         with tool_call("firecrawl:search", f"{company} contact email") as tc:
@@ -351,6 +371,8 @@ def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
     jobs = []
     if domain and hunter_key:
         jobs.append(hunter_job)
+    if domain and tomba_key and tomba_secret:
+        jobs.append(tomba_job)
     if fc_key:
         jobs.append(web_search_job)
     if website and fc_key:
@@ -395,7 +417,8 @@ def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
     contacts = rank_contacts(found)
     checked = ([f"website {website}"] if website else ["no official website found"]) + \
         (["company pages"] if website and fc_key else []) + (["Google"] if serp_key else []) + \
-        (["web search"] if fc_key else []) + (["Hunter.io"] if domain and hunter_key else [])
+        (["web search"] if fc_key else []) + (["Hunter.io"] if domain and hunter_key else []) + \
+        (["Tomba.io"] if domain and tomba_key and tomba_secret else [])
     return {"contacts": contacts, "checked": checked,
             "message": "" if contacts else (f"{company} does not publish a contact email on its website or in Google results. "
                                             "Big companies usually take applications only through the job's Apply link.")}

@@ -317,3 +317,13 @@ def test_company_panel_website_with_different_domain(monkeypatch):
     with mock.patch.object(cp.requests, "get", return_value=_resp(200, panel)):
         site, how = p.find_official_website("Northwind Traders")
     assert site == "https://xyzcorp.io" and "panel" in how
+
+
+def test_tomba_domain_search(monkeypatch):
+    for k in ("SERPAPI_KEY", "SERP_API_KEY", "FIRECRAWL_API_KEY", "HUNTER_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("TOMBA_API_KEY", "k"); monkeypatch.setenv("TOMBA_SECRET", "s")
+    data = {"data": {"emails": [{"email": "hr@cedargs.com", "department": "hr", "sources": [{"uri": "https://cedargs.com/c"}]}]}}
+    with mock.patch.object(cp.requests, "get", return_value=_resp(200, data)):
+        out = cp.find_contact_emails("Cedar Global Solutions", "https://cedargs.com")
+    assert out["contacts"][0]["email"] == "hr@cedargs.com" and "Tomba.io" in out["checked"]
