@@ -134,7 +134,8 @@ function JobsContent() {
       setCvSearchActive(true);
       setViewMode('recommended');
       if (!data.results || data.results.length === 0) {
-        setSearchError(`No live jobs found for "${data.query}"${data.location ? ` in ${data.location}` : ''}. Try another location below.`);
+        setSearchError(providerProblem(data.provider_status) ||
+          `No live jobs found for "${data.query}"${data.location ? ` in ${data.location}` : ''}. Try another location below.`);
       }
     } catch (err: any) {
       setSearchError(`Could not find jobs for your CV: ${err.message || err}`);
@@ -200,6 +201,16 @@ function JobsContent() {
     }
   }, [queryParam]);
 
+  /** Explain WHY a live search returned nothing: a failed provider (quota, key, timeout) is not "no jobs". */
+  const providerProblem = (status: Record<string, any> | undefined): string => {
+    const failed = Object.entries(status || {}).filter(([, v]) => v && v.ok === false);
+    if (!failed.length) return '';
+    const text = failed.map(([k, v]) => `${k}: ${String(v.error || 'failed').slice(0, 140)}`).join(' · ');
+    const quota = /429|quota|run out|limit|credit|402|payment/i.test(text);
+    return `The job providers failed, so no jobs could be fetched. ${text}` +
+      (quota ? ' Your monthly search credit may be used up: check with backend/scripts/check_providers.py.' : '');
+  };
+
   const handleSearch = async (queryToSearch: string, countryToUse: string = selectedCountry) => {
     if (!queryToSearch.trim()) return;
     setLoading(true);
@@ -213,7 +224,8 @@ function JobsContent() {
       if (data.results && data.results.length > 0) {
         setJobs(data.results);
       } else if (data.results && data.results.length === 0) {
-        setSearchError('No jobs found for this query. Try a different search term.');
+        setSearchError(providerProblem(data.provider_status) ||
+          `No live jobs found for "${queryToSearch}"${countryToUse !== 'ALL' ? ` in ${countryToUse}` : ''}. Try a shorter job title, e.g. "Python Developer".`);
       }
     } catch (err: any) {
       const msg = err.message || String(err);
