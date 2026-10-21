@@ -57,11 +57,46 @@ def _name_tokens(company: str) -> List[str]:
     return [w for w in words if w not in stop and len(w) > 2] or words[:1]
 
 
-def _domain_matches_company(url: str, company: str) -> bool:
+LEGAL = {"inc", "ltd", "llc", "pvt", "private", "limited", "the", "co", "corp", "corporation", "company", "and",
+         "plc", "gmbh", "llp", "pte", "sa", "ag"}
+
+
+def _name_words(company: str) -> List[str]:
+    return [w for w in re.findall(r"[a-z0-9]+", (company or "").lower()) if w not in LEGAL]
+
+
+def _domain_matches_company(url: str, company: str, text: str = "") -> bool:
+    """Strict: the domain must stand for the WHOLE company name, not just one shared word.
+    'Cedar Global Solutions' matches cedarglobalsolutions.com, cedarglobal.com, cedargs.com, cgs-only if the page
+    title also names the company - but NOT cedar.money. `text` (a result title/snippet) can confirm a weaker match."""
     root = _domain(_root(url))
     d = re.sub(r"[^a-z0-9]", "", root.split(".")[0] if root else "")
-    full = re.sub(r"[^a-z0-9]", "", company.lower())
-    return bool(d) and (d in full or full.startswith(d) or any(t in d for t in _name_tokens(company)))
+    words = _name_words(company)
+    if not d or not words:
+        return False
+    full = "".join(words)
+    if len(words) == 1:
+        return words[0] in d or (len(d) >= 4 and full.startswith(d))
+    initials = "".join(w[0] for w in words)
+    strong = (full in d or d in full and len(d) >= len(words[0]) + len(words[1])
+              or d.startswith(words[0] + words[1])
+              or d == words[0] + "".join(w[0] for w in words[1:])
+              or (len(initials) >= 3 and d == initials))
+    if strong:
+        return True
+    named = full in re.sub(r"[^a-z0-9]", "", (text or "").lower())
+    return named and (words[0] in d or d == initials)
+
+
+def page_names_company(page: str, company: str) -> bool:
+    """The website must actually name the company (all main words of the name appear on it)."""
+    text = re.sub(r"[^a-z0-9]+", " ", (page or "").lower())
+    words = _name_words(company)
+    return bool(words) and ("".join(words) in text.replace(" ", "") or all(re.search(r"\b" + w, text) for w in words))
+
+
+def site_is_company(url: str, company: str) -> bool:
+    return bool(url) and _is_official_candidate(url) and _domain_matches_company(url, company)
 
 
 class FirecrawlCompanyResearchProvider:
@@ -85,24 +120,21 @@ class FirecrawlCompanyResearchProvider:
             if resp.status_code != 200:
                 raise RuntimeError(f"SerpAPI returned HTTP {resp.status_code}")
             data = resp.json()
-            kg = (data.get("knowledge_graph") or {}).get("website")
-            candidates = ([kg] if kg else []) + [r.get("link") for r in data.get("organic_results") or [] if r.get("link")]
-            for url in candidates:
-                if _is_official_candidate(url) and _domain_matches_company(url, company):
-                    tc["summary"] = f"found {_root(url)}"
-                    return _root(url), "Google search"
-            # Google's company panel names the website itself, even when the domain differs from the name
-            if kg and _is_official_candidate(kg):
+            full = "".join(_name_words(company))
+            kg_block = data.get("knowledge_graph") or {}
+            kg = kg_block.get("website")
+            kg_title = re.sub(r"[^a-z0-9]", "", str(kg_block.get("title") or "").lower())
+            # Google's company panel is trusted only when the panel is about THIS company
+            if kg and _is_official_candidate(kg) and full and (full in kg_title or _domain_matches_company(kg, company, kg_block.get("title") or "")):
                 tc["summary"] = f"found {_root(kg)} (Google company panel)"
                 return _root(kg), "Google company panel"
-            # a top result whose title carries the full company name (e.g. "Cedar Global Solutions | Home" on cedargs.com)
-            full = re.sub(r"[^a-z0-9]", "", company.lower())
-            for r in (data.get("organic_results") or [])[:3]:
-                title = re.sub(r"[^a-z0-9]", "", (r.get("title") or "").lower())
-                if r.get("link") and _is_official_candidate(r["link"]) and len(full) >= 6 and full in title:
-                    tc["summary"] = f"found {_root(r['link'])} (result title matches)"
-                    return _root(r["link"]), "Google search (title match)"
-            tc["summary"] = f"no official website among {len(candidates)} results"
+            results = data.get("organic_results") or []
+            for r in results:
+                url = r.get("link") or ""
+                if _is_official_candidate(url) and _domain_matches_company(url, company, f"{r.get('title')} {r.get('snippet')}"):
+                    tc["summary"] = f"found {_root(url)}"
+                    return _root(url), "Google search"
+            tc["summary"] = f"no website clearly belonging to {company} among {len(results)} results"
         return None, "not found"
 
     # ---- 2. read the site -------------------------------------------------------------
@@ -183,6 +215,10 @@ class FirecrawlCompanyResearchProvider:
         except Exception as e:
             run_warn(f"Reading {site} failed: {e}")
             page = ""
+        if page and not page_names_company(page, company_name):
+            run_warn(f"{site} does not mention {company_name}, so it is not used (wrong company).")
+            return {**empty, "status": "not_found", "wrong_site": site,
+                    "message": f"No official website for {company_name} could be confirmed, so no company facts are used."}
         if not page:
             return {**empty, "official_website": site, "status": "unavailable",
                     "message": f"Found {site} but could not read it, so no company facts are used.",
@@ -435,7 +471,8 @@ def find_job_contact_emails(job_title: str, company: str, urls: List[str]) -> Di
 
     def mentions_company(text: str) -> bool:
         t = re.sub(r"[^a-z0-9]", "", (text or "").lower())
-        return bool(comp_l) and (comp_l in t or any(tok in t for tok in _name_tokens(company) if len(tok) > 3))
+        full = "".join(_name_words(company))
+        return bool(full) and full in t
 
     def page(url: str):
         def run():

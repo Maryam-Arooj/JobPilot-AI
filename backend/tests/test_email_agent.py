@@ -313,7 +313,7 @@ def test_hunter_and_company_panel_website(monkeypatch):
 def test_company_panel_website_with_different_domain(monkeypatch):
     monkeypatch.setenv("SERPAPI_KEY", "s")
     p = cp.FirecrawlCompanyResearchProvider(api_key="")
-    panel = {"knowledge_graph": {"website": "https://www.xyzcorp.io/"}, "organic_results": []}
+    panel = {"knowledge_graph": {"title": "Northwind Traders", "website": "https://www.xyzcorp.io/"}, "organic_results": []}
     with mock.patch.object(cp.requests, "get", return_value=_resp(200, panel)):
         site, how = p.find_official_website("Northwind Traders")
     assert site == "https://xyzcorp.io" and "panel" in how
@@ -343,3 +343,29 @@ def test_job_page_and_linkedin_post_emails(monkeypatch):
     emails = [c["email"] for c in out["contacts"]]
     assert "talent.cedar@gmail.com" in emails and "hr@cedargs.com" in emails
     assert "someone@gmail.com" not in emails                       # post about another company is ignored
+
+
+
+def test_one_shared_word_is_not_the_company():
+    assert not cp._domain_matches_company("https://cedar.money", "Cedar Global Solutions")
+    assert cp._domain_matches_company("https://cedargs.com", "Cedar Global Solutions")
+    assert cp.page_names_company("Cedar Global Solutions is a staffing firm", "Cedar Global Solutions")
+    assert not cp.page_names_company("Cedar helps hospitals with payments", "Cedar Global Solutions")
+
+
+def test_wrong_site_from_old_version_is_dropped():
+    from backend.services import company_research as cr
+    from backend.models.companies import Company, CompanyResearch
+    db = SessionLocal()
+    c = Company(name=f"Cedar Global Solutions {uuid.uuid4().hex[:4]}", official_website="https://cedar.money")
+    db.add(c); db.flush()
+    db.add(CompanyResearch(company_id=c.id, overview="Cedar money", products_services=[], technology_info=[],
+                           engineering_info="", mission_info="", recent_news=[], careers_url="",
+                           confidence_status="from_official_website"))
+    db.flush()
+    assert cr.payload(db, c, cr.latest(db, c.id))["status"] == "not_researched"     # old research is not shown
+    with mock.patch.object(cp.FirecrawlCompanyResearchProvider, "research_company",
+                           return_value={"status": "not_found", "claims": [], "sources": []}):
+        cr.research_and_save(db, c)
+    assert c.official_website is None
+    db.rollback(); db.close()

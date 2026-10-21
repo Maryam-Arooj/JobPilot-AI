@@ -34,11 +34,14 @@ def latest(db: Session, company_id: int) -> Optional[CompanyResearch]:
 
 def _status(rec: CompanyResearch) -> str:
     s = rec.confidence_status or ""
-    return "found" if s in ("from_official_website",) else (s if s in STATUS_MESSAGES else "unverified")
+    if not s.endswith("_v2"):
+        return "not_researched"      # saved by an older version (its website match was too loose) -> research again
+    s = s[:-3]
+    return "found" if s == "from_official_website" else (s if s in STATUS_MESSAGES else "unverified")
 
 
 def _fresh(rec: CompanyResearch) -> bool:
-    if rec.confidence_status == "not_researched":
+    if _status(rec) == "not_researched":
         return False
     if _status(rec) == "found":
         return True
@@ -51,19 +54,22 @@ def _fresh(rec: CompanyResearch) -> bool:
 
 
 def research_and_save(db: Session, comp: Company, job_url: Optional[str] = None, force: bool = False) -> CompanyResearch:
+    from ..providers.company_providers import site_is_company
+    if comp.official_website and not site_is_company(comp.official_website, comp.name):
+        comp.official_website = None          # saved by the old, loose matcher (e.g. cedar.money for Cedar Global Solutions)
+        force = True
     rec = latest(db, comp.id)
-    if rec and not force and _fresh(rec):
+    if rec and not force and _fresh(rec) and (rec.confidence_status or "").endswith("_v2"):
         return rec
     data = CompanyResearchAgent().research(comp.name, comp.official_website, job_url)
-    if data.get("official_website"):
-        comp.official_website = data["official_website"]
+    comp.official_website = data.get("official_website") or None
     if data.get("industry"):
         comp.industry = data["industry"]
     rec = CompanyResearch(
         company_id=comp.id, overview=data.get("overview") or "",
         products_services=data.get("products_services") or [], technology_info=data.get("technology_info") or [],
         engineering_info="", mission_info=data.get("mission_info") or "", recent_news=[],
-        careers_url=data.get("careers_url") or "", confidence_status=data.get("confidence_status") or "not_found")
+        careers_url=data.get("careers_url") or "", confidence_status=(data.get("confidence_status") or "not_found") + "_v2")
     db.add(rec)
     db.flush()
     for src in data.get("sources") or []:
@@ -100,7 +106,7 @@ def payload(db: Session, comp: Company, rec: Optional[CompanyResearch]) -> Dict[
 
 
 CONTACTS_PROVIDER = "contact_emails"
-CONTACTS_VERSION = 4
+CONTACTS_VERSION = 5
 
 
 def cached_contacts(db: Session, comp: Optional[Company]) -> Optional[list]:
