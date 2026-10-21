@@ -8,6 +8,7 @@ import { AICommandComposer } from '@/components/AICommandComposer';
 import { AIInsightPanel, flattenProfileSkills, topGaps } from '@/components/AIInsightPanel';
 import { WorkflowStrip, type WorkflowStage } from '@/components/WorkflowStrip';
 import { LiveAgentActivity } from '@/components/LiveAgentActivity';
+import { ApplyWithAI } from '@/components/ApplyWithAI';
 import { PageHeader, Card, CardHeader, StatusPill, EmptyState, buttonClass } from '@/components/ui';
 import type { Tone } from '@/components/ui';
 import {
@@ -193,6 +194,8 @@ export default function DashboardPage() {
           </div>
           <WorkflowStrip stages={stages} />
         </section>
+
+        <ApplyWithAI />
 
         <LiveAgentActivity />
 

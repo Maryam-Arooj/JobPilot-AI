@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { apiFetch } from '@/lib/api';
 import { FormattedJobDescription } from '@/components/FormattedJobDescription';
+import { ApplyWithAI } from '@/components/ApplyWithAI';
 import {
   Search,
   MapPin,
@@ -512,6 +513,8 @@ function JobsContent() {
             ))}
           </div>
         </div>
+
+        <ApplyWithAI />
 
         {/* Filter Controls Bar */}
         <div className="flex flex-wrap items-center justify-between gap-4 bg-surface p-3.5 rounded-xl border border-line">
