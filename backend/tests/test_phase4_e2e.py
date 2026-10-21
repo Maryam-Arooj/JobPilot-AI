@@ -1,3 +1,4 @@
+import os
 import pytest
 from fastapi.testclient import TestClient
 from backend.api.main import app
@@ -57,6 +58,7 @@ def setup_phase4_fixtures():
     finally:
         db.close()
 
+@pytest.mark.skipif(not (os.getenv("FIRECRAWL_API_KEY")), reason="live integration test: needs real API keys in the environment")
 def test_phase4_complete_workspace_flow():
     user_id, job_id, company_id = setup_phase4_fixtures()
     token = create_token(user_id)

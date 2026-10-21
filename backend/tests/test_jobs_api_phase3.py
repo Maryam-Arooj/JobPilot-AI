@@ -1,3 +1,4 @@
+import os
 import pytest
 from fastapi.testclient import TestClient
 from backend.api.main import app
@@ -32,6 +33,7 @@ def setup_test_user_and_profile():
     finally:
         db.close()
 
+@pytest.mark.skipif(not (os.getenv("SERPAPI_KEY") or os.getenv("SERP_API_KEY") or os.getenv("APIFY_API_TOKEN")), reason="live integration test: needs real API keys in the environment")
 def test_jobs_phase3_complete_api_flow():
     user_id = setup_test_user_and_profile()
     token = create_token(user_id)

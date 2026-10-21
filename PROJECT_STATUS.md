@@ -6,7 +6,7 @@
 - **Maintainer:** Maryam Arooj
 - **Local path (Windows):** `C:\Users\vc\Downloads\jobpilot_AI\jobpilot_AI`
 - **Deadline:** project submission ~22 Oct 2026 (3-day sprint: 19–21 Oct)
-- **Last updated:** 20 Oct 2026 (Tasks 1–3 done; Task 4 code done, waiting for the owner's live check)
+- **Last updated:** 21 Oct 2026 (Tasks 1–3 done; Tasks 4–6 code done; owner live checks + push left)
 
 ---
 
@@ -99,11 +99,13 @@ backend\.venv\Scripts\python -m pytest backend\tests -q
 | 3 | **Job Agent:** "Upload your CV → recommended jobs" quick path (search built from the CV's headline, skills and location; works right after /documents/parse or upload); debug SerpAPI 0 results, Apify `keywords/location/limitPerSource`, never save error items, parallel providers with timeouts, fix/drop Firecrawl enrichment, LLM job analysis, evidence-based scores, no invented defaults. Verify: 2–3 live searches. | Tue 20 | ✅ Done (owner confirmed live job search, country + remote, 20 Oct) |
 | 4 | **Email Agent:** company research = SerpAPI → official site → Firecrawl → LLM summary with sources (empty if nothing); LLM email + claim validator; Gmail `email` scope + signed OAuth state; live draft test. | Tue 20 | 🔄 Partly seen live (owner saw real company research + AI email in the app, 21 Oct); CV attachment and recipient search not yet confirmed live |
 | 5 | **Pipeline:** "Run pipeline" CV → jobs → match → email → Gmail draft, every step visible live on the dashboard. | Wed 21 | 🔄 Code done 21 Oct, 151 tests pass — waiting for owner live check |
-| 6 | **Final:** full test pass, jobs/applications screenshots, maintainer-only README, demo script, push. | Wed 21 | ⏳ Not started |
+| 6 | **Final:** full test pass, jobs/applications screenshots, maintainer-only README, demo script, push. | Wed 21 | 🔄 Done 21 Oct except screenshots of jobs/applications and the push (owner) — 151 passed, 2 live-only tests skipped without keys |
 
 Status legend: ⏳ not started · 🔄 in progress · ✅ done · ⚠️ blocked
 
 ## 7. Progress log (newest first)
+
+- **21 Oct 2026 — Task 6.** README rewritten for the finished project (three agents, Apply with AI, live dashboard, recipient sources, setup, configuration); shows only "Maintained by Maryam Arooj"; LICENSE unchanged. New `docs/DEMO_SCRIPT.md`. Final test run below. Owner pushes from Windows.
 
 - **21 Oct 2026 — Task 5 code done: one-click "Apply with AI".** `services/pipeline.py` + `api/pipeline.py` (`POST /pipeline/apply`, `GET /pipeline/{id}`): CV Agent reads the CV → Job Agent `jobs_from_cv` (live) → Email Agent finds real recruiter emails for the top 10 (batch) → picks the best-ranked job **with** an email (or the best job if `require_email=false`) → `create_application` (company research + fact-checked email + CV attached) → stops at "You: approve the Gmail draft" (never drafts or sends itself). Each agent records its own run on the dashboard. UI: `components/ApplyWithAI.tsx` on Overview and Jobs (location choice, email-only toggle, live steps, "Review email & create draft"). Tests `tests/test_pipeline.py` (3). 151 passed. Live check: `backend/scripts/verify_task5.py`.
 
