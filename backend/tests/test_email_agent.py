@@ -392,3 +392,33 @@ def test_apify_contact_crawl(monkeypatch):
         out = cp.find_contact_emails("Cedar Global Solutions", "https://cgsinc.us")
     assert [c["email"] for c in out["contacts"]] == ["recruiting@cgsinc.us"]
     assert out["contacts"][0]["source_url"] == "https://cgsinc.us/careers"
+
+
+def test_batch_email_search_and_known_recipients():
+    import time as _t
+    from backend.services import recipients as rcp
+    from backend.models.jobs import JobSearch
+    db = SessionLocal()
+    u = User(email=f"b-{uuid.uuid4().hex[:6]}@test.local", password_hash="x"); db.add(u); db.commit(); db.refresh(u)
+    j1 = Job(title="Dev", company=f"Posted {uuid.uuid4().hex[:4]}", description="Mail CVs to jobs@posted.pk")
+    j2 = Job(title="Dev", company=f"Quiet {uuid.uuid4().hex[:4]}", description="Apply online.")
+    db.add_all([j1, j2]); db.commit()
+    db.add(JobSearch(user_id=u.id, natural_language_query="dev", structured_intent={}, results_count=2,
+                     provider_status={"job_ids": [j1.id, j2.id]})); db.commit()
+    uid, id1, id2 = u.id, j1.id, j2.id
+    known = rcp.known_recipients(db, [j1, j2])
+    assert known[id1] == ["jobs@posted.pk"] and known[id2] == []
+    db.close()
+    h = {"Authorization": f"Bearer {create_token(uid)}"}
+    fake = {"contacts": [{"email": "hr@quiet.com", "kind": "hiring", "source_url": "s"}], "checked": [], "message": ""}
+    with mock.patch.object(rcp, "search_recipients", return_value=fake):
+        r = client.post("/jobs/find-emails", json={"job_ids": [id1, id2]}, headers=h)
+        assert r.status_code == 200, r.text
+        tid = r.json()["task_id"]
+        for _ in range(50):
+            t = client.get(f"/jobs/find-emails/{tid}", headers=h).json()
+            if t["status"] != "running":
+                break
+            _t.sleep(0.1)
+    assert t["status"] == "done", t
+    assert t["found"][str(id2)] == ["hr@quiet.com"] and t["found"][str(id1)][0] == "jobs@posted.pk"

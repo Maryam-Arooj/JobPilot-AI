@@ -24,7 +24,8 @@ import {
   Globe,
   Award,
   Send,
-  ArrowRight
+  ArrowRight,
+  Mail
 } from 'lucide-react';
 
 interface Evidence {
@@ -43,6 +44,7 @@ interface MatchDetails {
 
 interface JobItem {
   id: number;
+  recipient_emails?: string[];
   title: string;
   company: string;
   location: string;
@@ -93,6 +95,10 @@ function JobsContent() {
   const [searchError, setSearchError] = useState<string | null>(null);
   const [selectedCountry, setSelectedCountry] = useState<string>('ALL');
   const [filterRemote, setFilterRemote] = useState<boolean | null>(null);
+  const [onlyWithEmail, setOnlyWithEmail] = useState(false);
+  const [emailMap, setEmailMap] = useState<Record<number, string[]>>({});
+  const [emailSearch, setEmailSearch] = useState<{ done: number; total: number; status: string } | null>(null);
+  const emailsOf = (job: JobItem): string[] => emailMap[job.id] ?? job.recipient_emails ?? [];
   const [filterAlignment, setFilterAlignment] = useState<string>('ALL');
   const [selectedJob, setSelectedJob] = useState<JobItem | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'match'>('overview');
@@ -246,6 +252,27 @@ function JobsContent() {
     });
   };
 
+  /** Ask the Email Agent to find real recruiter emails for the jobs on screen (runs in the background). */
+  const findEmailsForJobs = async (list: JobItem[]) => {
+    const ids = list.filter(j => emailsOf(j).length === 0).slice(0, 15).map(j => j.id);
+    if (!ids.length) return;
+    setEmailSearch({ done: 0, total: ids.length, status: 'running' });
+    try {
+      const { task_id } = await apiFetch('/jobs/find-emails', { method: 'POST', body: JSON.stringify({ job_ids: ids }) });
+      for (let i = 0; i < 120; i++) {
+        await new Promise(r => setTimeout(r, 3000));
+        const t = await apiFetch(`/jobs/find-emails/${task_id}`);
+        const found: Record<number, string[]> = {};
+        Object.entries(t.found || {}).forEach(([k, v]) => { found[Number(k)] = v as string[]; });
+        setEmailMap(prev => ({ ...prev, ...found }));
+        setEmailSearch({ done: t.done, total: t.total, status: t.status });
+        if (t.status !== 'running') break;
+      }
+    } catch (err: any) {
+      setEmailSearch({ done: 0, total: 0, status: `failed: ${err?.message || 'error'}` });
+    }
+  };
+
   const currentList = viewMode === 'recommended' 
     ? recommendations 
     : viewMode === 'saved' 
@@ -254,6 +281,7 @@ function JobsContent() {
 
   const filteredJobs = currentList.filter(job => {
     if (filterRemote !== null && job.remote !== filterRemote) return false;
+    if (onlyWithEmail && emailsOf(job).length === 0) return false;
     if (filterAlignment !== 'ALL' && job.alignment !== filterAlignment) return false;
     if (selectedCountry === 'Remote Worldwide') {
       if (!job.remote) return false;
@@ -502,6 +530,32 @@ function JobsContent() {
             >
               Remote Only
             </button>
+
+            <button
+              onClick={() => setOnlyWithEmail(v => !v)}
+              className={`px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1 ${
+                onlyWithEmail ? 'bg-accent text-white border-accent font-semibold' : 'bg-inset text-muted border-line hover:text-fg'
+              }`}
+            >
+              <Mail className="w-3.5 h-3.5" /> Only jobs with a recruiter email
+            </button>
+
+            <button
+              onClick={() => findEmailsForJobs(filteredJobs.length ? filteredJobs : currentList)}
+              disabled={emailSearch?.status === 'running'}
+              className="px-3 py-1.5 rounded-lg border border-accent/40 text-accent bg-accent-soft font-semibold disabled:opacity-60"
+            >
+              {emailSearch?.status === 'running'
+                ? `Finding emails... ${emailSearch.done}/${emailSearch.total} companies`
+                : 'Find emails for these jobs'}
+            </button>
+            {emailSearch && emailSearch.status !== 'running' && (
+              <span className="text-muted">
+                {emailSearch.status === 'done'
+                  ? `${Object.values(emailMap).filter(v => v.length).length} job(s) with a real recruiter email`
+                  : emailSearch.status}
+              </span>
+            )}
           </div>
 
           <div className="text-xs font-mono text-muted">
@@ -562,6 +616,11 @@ function JobsContent() {
                             {job.location}
                           </span>
                         </div>
+                        {emailsOf(job).length > 0 && (
+                          <div className="mt-1 text-[11px] text-ok flex items-center gap-1 font-semibold">
+                            <Mail className="w-3 h-3" /> {emailsOf(job)[0]}
+                          </div>
+                        )}
                       </div>
 
                       <button

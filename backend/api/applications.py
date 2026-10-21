@@ -68,28 +68,7 @@ def _build_resume_attachment(db: Session, app_obj: Application, user_id: int, fm
         raise HTTPException(status_code=500, detail="Your CV could not be turned into a PDF. Try DOCX or save a CV version first.")
 
 
-EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-
-
-def contact_emails(job: Optional[Job]) -> List[str]:
-    """Real contact addresses written in the job posting itself (never guessed)."""
-    if not job:
-        return []
-    text = " ".join(str(x) for x in [job.description or "", *(job.requirements or [])])
-    found = []
-    for e in EMAIL_RE.findall(text):
-        e = e.strip(".").lower()
-        if e not in found and not e.endswith((".png", ".jpg")) and "example." not in e:
-            found.append(e)
-    return found[:3]
-
-
-def _linkedin_url(job: Optional[Job]) -> str:
-    """The LinkedIn job page (where the recruiter is often named), only if the job came from LinkedIn."""
-    for u in ((job.application_url or ""), (job.source_url or "")) if job else ():
-        if "linkedin.com" in u:
-            return u
-    return ""
+from ..services.recipients import EMAIL_RE, contact_emails, linkedin_url as _linkedin_url, search_recipients
 
 
 def _profile_dict(db: Session, user_id: int) -> Dict[str, Any]:
@@ -405,54 +384,23 @@ def update_application_email(
 @router.post("/{app_id}/find-recipient")
 def find_recipient(app_id: int, force: bool = False, user_id: int = Depends(get_current_user_id),
                    db: Session = Depends(get_db)):
-    """Find a REAL recipient: the job posting first, then the company's own website and Google results."""
+    """Find a REAL recipient: posting, job pages, public LinkedIn posts, the company's site and the web."""
     app_obj = db.query(Application).filter(Application.id == app_id, Application.user_id == user_id).first()
     if not app_obj:
         raise HTTPException(status_code=404, detail="Application workspace not found")
     job = db.query(Job).filter(Job.id == app_obj.job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
     comp = db.query(Company).filter(Company.id == app_obj.company_id).first() if app_obj.company_id else None
-    posting = [{"email": e, "kind": "job_posting", "source_url": (job.application_url or job.source_url or "") if job else "",
-                "on_site": False} for e in contact_emails(job)]
-    if posting and not force:
-        return {"contacts": posting, "recipient": posting[0]["email"], "message": ""}
-    with track_run(user_id, "email", f"Find recipient email for {comp.name if comp else 'company'}",
+    if contact_emails(job) and not force:
+        return search_recipients(db, job, comp)
+    with track_run(user_id, "email", f"Find recipient email for {comp.name if comp else job.company}",
                    input_summary={"application_id": app_id}) as run:
-        run.step("Search company website and Google", 1, 1)
-        from ..providers.company_providers import find_job_contact_emails
-        li = cr.linkedin_facts(db, job)
-        from ..services.agent_runs import current_run
-        import contextvars
-        from concurrent.futures import ThreadPoolExecutor
-        # the job's own pages + public LinkedIn posts run at the same time as the company search
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            job_future = pool.submit(contextvars.copy_context().run, find_job_contact_emails,
-                                     job.title if job else "", comp.name if comp else (job.company if job else ""),
-                                     [u for u in {(job.application_url or ""), (job.source_url or "")} if u] if job else [])
-            found = cr.find_contacts(db, comp, (job.application_url or job.source_url) if job else None, force=force,
-                                     trusted_website=li.get("company_website") or None) if comp \
-                else {"contacts": [], "message": "This application has no company.", "checked": []}
-            try:
-                job_found = job_future.result(timeout=40)
-            except Exception as e:
-                run.warn(f"Job-page recipient search failed: {e}")
-                job_found = {"contacts": [], "checked": []}
-        db.commit()
-        seen = {p["email"] for p in posting}
-        contacts = posting[:]
-        for c in job_found["contacts"] + found["contacts"]:
-            if c["email"] not in seen:
-                seen.add(c["email"]); contacts.append(c)
-        found["checked"] = job_found.get("checked", []) + found.get("checked", [])
-        if job_found["contacts"]:
-            cr.remember_contacts(db, comp, [c for c in contacts if c not in posting])
-            db.commit()
-        run.set_output({"found": len(contacts), "cached": found.get("cached"),
-                        "domains": sorted({c["email"].split("@")[1] for c in contacts})})
-        return {"contacts": contacts, "recipient": contacts[0]["email"] if contacts else "",
-                "checked": found.get("checked", []), "linkedin_url": _linkedin_url(job),
-                "recruiter": {"name": li.get("poster_name"), "title": li.get("poster_title"),
-                              "profile_url": li.get("poster_url")} if li.get("poster_name") else None,
-                "message": "" if contacts else found.get("message", "")}
+        run.step("Search job pages, LinkedIn posts, company website and the web", 1, 1)
+        out = search_recipients(db, job, comp, force=force)
+        run.set_output({"found": len(out["contacts"]), "cached": out.get("cached"),
+                        "domains": sorted({c["email"].split("@")[1] for c in out["contacts"]})})
+        return out
 
 
 @router.post("/{app_id}/gmail-draft")

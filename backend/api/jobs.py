@@ -15,6 +15,7 @@ from ..ai_agents.job_match import JobMatchAgent
 from ..services.job_normalizer import normalize_job, deduplicate_jobs
 from ..services.agent_runs import track_run
 from ..services.locations import parse_location
+from ..services.recipients import known_recipients, start_batch, get_batch
 from ..services.job_normalizer import clean_company
 from ..services.job_matching import (analyze_job_with_ai, candidate_skills, candidate_title, job_text,
                                      required_years, score_job)
@@ -260,7 +261,9 @@ def get_job_recommendations(limit: int = 20, user_id: int = Depends(get_current_
     profile = _profile_dict(db.query(CareerProfile).filter(CareerProfile.user_id == user_id).first())
     allowed_ids = _user_job_ids(db, user_id)
     jobs = db.query(Job).filter(Job.id.in_(allowed_ids)).order_by(Job.id.desc()).limit(100).all() if allowed_ids else []
-    recs = _rank([_job_payload(j, score_job(profile, _job_dict(j))) for j in jobs])
+    known = known_recipients(db, jobs)
+    recs = _rank([{**_job_payload(j, score_job(profile, _job_dict(j))), "recipient_emails": known.get(j.id, [])}
+                  for j in jobs])
     return {"candidate_skills": candidate_skills(profile), "total_recommendations": len(recs), "results": recs[:limit]}
 
 
@@ -314,7 +317,32 @@ def list_jobs(
             "application_url": j.application_url,
             "alignment": match.overall_alignment if match else "Unmatched"
         })
+    known = known_recipients(db, [j for j in jobs if j.id in {r["id"] for r in res}])
+    for r in res:
+        r["recipient_emails"] = known.get(r["id"], [])
     return res
+
+
+class FindEmailsRequest(BaseModel):
+    job_ids: List[int]
+
+
+@router.post("/find-emails")
+def find_emails_for_jobs(req: FindEmailsRequest, user_id: int = Depends(get_current_user_id), db: Session = Depends(get_db)):
+    """Search real recruiter emails for up to 15 of your jobs in the background (see GET /jobs/find-emails/{id})."""
+    allowed = _user_job_ids(db, user_id)
+    ids = [i for i in dict.fromkeys(req.job_ids) if i in allowed][:15]
+    if not ids:
+        raise HTTPException(status_code=400, detail="No jobs to search")
+    return {"task_id": start_batch(user_id, ids), "jobs": len(ids)}
+
+
+@router.get("/find-emails/{task_id}")
+def find_emails_progress(task_id: str, user_id: int = Depends(get_current_user_id)):
+    t = get_batch(task_id, user_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Search not found")
+    return t
 
 
 @router.get("/{job_id}")
