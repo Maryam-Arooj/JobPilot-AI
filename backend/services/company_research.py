@@ -134,7 +134,8 @@ def cached_contacts(db: Session, comp: Optional[Company]) -> Optional[list]:
            .order_by(CompanyResearchSource.id.desc()).first())
     if not row or (row.raw_data or {}).get("v") != CONTACTS_VERSION:
         return None          # never searched, or searched by an older, weaker finder
-    return (row.raw_data or {}).get("contacts", [])
+    from ..providers.company_providers import rank_contacts
+    return rank_contacts((row.raw_data or {}).get("contacts", []))
 
 
 def find_contacts(db: Session, comp: Company, job_url: Optional[str] = None, force: bool = False,

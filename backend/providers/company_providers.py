@@ -271,10 +271,26 @@ def extract_emails(text: str) -> List[str]:
     return out
 
 
+NOT_FOR_APPLICATIONS = ("compliance", "legal", "security", "accessibility", "sales", "billing", "invoice", "press",
+                        "media", "investor", "ir", "support", "help", "ethics", "abuse", "marketing", "partners",
+                        "procurement", "finance", "accounts", "privacy", "dpo", "gdpr", "orders", "returns")
+
+
+def _fit(email: str) -> int:
+    """How suitable an address is for a job application: 0 HR/careers, 1 general, 2 other, 3 clearly not for jobs."""
+    local = email.split("@")[0].lower()
+    parts = re.split(r"[._+-]", local)
+    if any(p in NOT_FOR_APPLICATIONS for p in parts):
+        return 3
+    return {"hiring": 0, "general": 1}.get(_email_kind(email) or "other", 2)
+
+
 def rank_contacts(found: List[Dict[str, str]]) -> List[Dict[str, str]]:
     order = {"job_posting": 0, "hiring": 1, "general": 2, "other": 3}
     seen, out = set(), []
-    for c in sorted(found, key=lambda c: (order.get(c["kind"], 9), 0 if c.get("on_site") else 1)):
+    # an HR/careers address beats everything; then where it was found; addresses like compliance@ go last
+    for c in sorted(found, key=lambda c: (min(_fit(c["email"]), 2) if _fit(c["email"]) else -1,
+                                          order.get(c["kind"], 9), _fit(c["email"]), 0 if c.get("on_site") else 1)):
         if c["email"] not in seen:
             seen.add(c["email"])
             out.append(c)

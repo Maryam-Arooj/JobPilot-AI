@@ -141,6 +141,10 @@ def oauth_callback(code: str, state: str = None, db: Session = Depends(get_db)):
     token_data = token_response.json()
     access_token = token_data.get("access_token")
     refresh_token = token_data.get("refresh_token", "")
+    granted = str(token_data.get("scope") or "")
+    if granted and "gmail.compose" not in granted and "mail.google.com" not in granted:
+        # Google lets the user untick the Gmail box on the consent screen; without it drafts always fail
+        raise HTTPException(status_code=400, detail="missing_scope: the Gmail drafts permission was not granted")
 
     # Get user's Gmail address
     email = ""

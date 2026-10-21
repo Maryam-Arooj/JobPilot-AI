@@ -106,6 +106,14 @@ function ApplicationStudioContent() {
   const router = useRouter();
   const jobIdParam = searchParams.get('job_id');
   const appIdParam = searchParams.get('id');
+  const oauthError = searchParams.get('error');
+  const OAUTH_ERRORS: Record<string, string> = {
+    gmail_scope_missing: "Gmail was not connected: on Google's screen the box 'Manage drafts and send emails' was not ticked. Click Connect Gmail again and tick every box.",
+    oauth_denied: 'Gmail connection was cancelled on the Google screen.',
+    backend_oauth_failed: 'Gmail connection failed. Make sure the backend is running and click Connect Gmail again.',
+    backend_network_error: 'Could not reach the backend to finish connecting Gmail. Start the backend and try again.',
+    missing_oauth_params: 'Google did not return a login code. Click Connect Gmail again.',
+  };
 
   const [apps, setApps] = useState<ApplicationSummary[]>([]);
   const [selectedApp, setSelectedApp] = useState<ApplicationData | null>(null);
@@ -167,6 +175,8 @@ function ApplicationStudioContent() {
       setGmailEmail(status.email || '');
       if (status.configuration_error) {
         setGmailConfigError(status.configuration_error);
+      } else if (oauthError && OAUTH_ERRORS[oauthError]) {
+        setGmailConfigError(OAUTH_ERRORS[oauthError]);
       }
     } catch (err) {
       setGmailConnected(false);

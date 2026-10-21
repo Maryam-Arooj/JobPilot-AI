@@ -422,3 +422,30 @@ def test_batch_email_search_and_known_recipients():
             _t.sleep(0.1)
     assert t["status"] == "done", t
     assert t["found"][str(id2)] == ["hr@quiet.com"] and t["found"][str(id1)][0] == "jobs@posted.pk"
+
+
+def test_careers_address_beats_compliance():
+    f = [{"email": "compliance@insight.com", "kind": "job_posting", "source_url": "a"},
+         {"email": "emea.careers@insight.com", "kind": "job_posting", "source_url": "b"},
+         {"email": "contactus@insight.com", "kind": "general", "source_url": "c", "on_site": True}]
+    assert [c["email"] for c in cp.rank_contacts(f)] == ["emea.careers@insight.com", "contactus@insight.com",
+                                                         "compliance@insight.com"]
+
+
+def test_ai_greeting_and_signoff_are_not_doubled():
+    fake = {"subject": "Application", "body": "Dear Hiring Manager,\n\nI use Python and Airflow.\n\nBest regards\n\nJordan Avery"}
+    with mock.patch("backend.services.nvidia_llm.call_nvidia_json", return_value=fake):
+        out = ApplicationEmailAgent().generate_email(PROFILE, JOB, company_research=RESEARCH)
+    assert out["body"].count("Dear") == 1 and "Best regards" not in out["body"]
+    assert out["body"].count("Jordan Avery") == 1
+
+
+def test_gmail_errors_are_explained():
+    from backend.providers.email_providers import explain_gmail_error
+    r = mock.Mock(status_code=403)
+    r.json.return_value = {"error": {"message": "Request had insufficient authentication scopes.",
+                                     "errors": [{"reason": "insufficientPermissions"}]}}
+    assert "tick every box" in explain_gmail_error(r)
+    r2 = mock.Mock(status_code=403)
+    r2.json.return_value = {"error": {"message": "Gmail API has not been used in project 123 before or it is disabled."}}
+    assert "Enable" in explain_gmail_error(r2)

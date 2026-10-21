@@ -452,11 +452,9 @@ def create_gmail_draft(
                 status_code=409,
                 detail="Gmail is not connected. Connect your Gmail account before creating a draft. No draft was created."
             )
-        except GmailDraftError:
-            raise HTTPException(
-                status_code=502,
-                detail="Gmail rejected or failed the draft request. No draft was created. Try reconnecting Gmail."
-            )
+        except GmailDraftError as e:
+            run.warn(f"Gmail draft failed: {e}")
+            raise HTTPException(status_code=502, detail=f"No draft was created. {e}")
 
         draft_record = EmailDraft(
             application_id=app_id,

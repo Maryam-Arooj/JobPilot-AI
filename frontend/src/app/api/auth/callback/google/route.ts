@@ -26,8 +26,9 @@ export async function GET(request: Request) {
     const res = await fetch(backendUrl);
     
     if (!res.ok) {
+      const body = await res.text();
       console.error('Backend OAuth error status:', res.status);
-      appUrl.searchParams.set('error', 'backend_oauth_failed');
+      appUrl.searchParams.set('error', body.includes('missing_scope') ? 'gmail_scope_missing' : 'backend_oauth_failed');
       return NextResponse.redirect(appUrl);
     }
     

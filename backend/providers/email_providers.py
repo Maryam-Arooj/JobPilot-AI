@@ -16,7 +16,32 @@ class GmailNotConnectedError(Exception):
     """User has no active Gmail OAuth connection."""
 
 class GmailDraftError(Exception):
-    """Gmail API call failed; details are logged server-side only."""
+    """Gmail API call failed. The message is a plain explanation safe to show the user (never a token)."""
+
+
+def explain_gmail_error(resp) -> str:
+    """Turn Google's error reply into a clear reason + fix. Only Google's own error text is used, never tokens."""
+    try:
+        err = (resp.json() or {}).get("error") or {}
+    except Exception:
+        err = {}
+    msg = str(err.get("message") if isinstance(err, dict) else err or "")[:200]
+    reasons = " ".join(str(d.get("reason", "")) for d in (err.get("errors") or []) if isinstance(d, dict)) if isinstance(err, dict) else ""
+    low = f"{msg} {reasons}".lower()
+    code = resp.status_code
+    if code == 403 and ("scope" in low or "insufficient" in low or "permission" in low):
+        return ("Gmail permission missing: when you connected, the 'Manage drafts and send emails' box was not ticked. "
+                "Click Connect Gmail again and tick every box Google shows.")
+    if code == 403 and ("has not been used" in low or "disabled" in low or "accessnotconfigured" in low):
+        return ("The Gmail API is not enabled for your Google Cloud project. Open Google Cloud Console → APIs & Services → "
+                "Library → Gmail API → Enable, then try again.")
+    if code == 401:
+        return "Gmail login expired and could not be refreshed. Click Connect Gmail again."
+    if code == 400:
+        return f"Gmail refused the email ({msg or 'bad request'}). Check the recipient address."
+    if code == 429:
+        return "Gmail is rate-limiting requests. Wait a minute and try again."
+    return f"Gmail returned HTTP {code}{': ' + msg if msg else ''}."
 
 class EmailProvider(ABC):
     @abstractmethod
@@ -155,7 +180,7 @@ class GmailEmailProvider(EmailProvider):
                 "Gmail draft API returned HTTP %s for user %s: %s",
                 draft_resp.status_code, user_id, draft_resp.text[:300]
             )
-            raise GmailDraftError(f"Gmail API returned HTTP {draft_resp.status_code}")
+            raise GmailDraftError(explain_gmail_error(draft_resp))
 
         return {
             "status": "success",

@@ -49,6 +49,23 @@ def _norm_num(s: str) -> str:
     return re.sub(r"[\s,%+]", "", s.lower())
 
 
+GREETING = re.compile(r"^(dear|hi|hello|hey|greetings|good (morning|afternoon|evening)|to whom it may concern)\b.{0,80}[,:!]?$", re.I)
+SIGNOFF = re.compile(r"^(best( regards)?|kind regards|warm regards|regards|sincerely( yours)?|yours (sincerely|faithfully|truly)|"
+                     r"thank you( for your (time|consideration))?|thanks|many thanks|respectfully|cheers)[,.!]?$", re.I)
+
+
+def strip_greeting_and_signoff(body: str, f: Dict[str, Any]) -> str:
+    """The app adds its own greeting and signature; remove the ones the AI wrote so they are not doubled."""
+    lines = [l.rstrip() for l in body.strip().split("\n")]
+    while lines and (not lines[0].strip() or GREETING.match(lines[0].strip())):
+        lines.pop(0)
+    own = {str(x).strip().lower() for x in (f.get("name"), f.get("email"), f.get("phone")) if x}
+    while lines and (not lines[-1].strip() or SIGNOFF.match(lines[-1].strip()) or lines[-1].strip().lower() in own
+                     or lines[-1].strip().strip("[]").lower() in ("your name", "name")):
+        lines.pop()
+    return "\n".join(lines).strip()
+
+
 class ApplicationEmailAgent:
     VALID_TONES = list(TONE_GUIDE)
 
@@ -133,7 +150,7 @@ class ApplicationEmailAgent:
         if not isinstance(data, dict) or not str(data.get("body") or "").strip():
             run_warn("AI email writer returned no body; an honest template is used instead.")
             return None
-        return {"subject": str(data.get("subject") or "").strip()[:150], "body": str(data["body"]).strip()}
+        return {"subject": str(data.get("subject") or "").strip()[:150], "body": strip_greeting_and_signoff(str(data["body"]), f)}
 
     @staticmethod
     def _template(f: Dict[str, Any], tone: str) -> Dict[str, str]:

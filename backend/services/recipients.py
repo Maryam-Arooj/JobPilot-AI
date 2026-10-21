@@ -84,6 +84,8 @@ def search_recipients(db: Session, job: Job, comp: Optional[Company], force: boo
     if job_found["contacts"]:
         cr.remember_contacts(db, comp, [c for c in contacts if c not in posting])
         db.commit()
+    from ..providers.company_providers import rank_contacts
+    contacts = rank_contacts(contacts)
     return {**base, "contacts": contacts, "recipient": contacts[0]["email"] if contacts else "",
             "checked": job_found.get("checked", []) + found.get("checked", []), "cached": found.get("cached"),
             "message": "" if contacts else found.get("message", "")}
