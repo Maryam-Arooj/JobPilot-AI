@@ -70,6 +70,7 @@ interface ApplicationData {
     removed_claims?: string[];
     method?: 'ai' | 'template';
   };
+  contacts?: Contact[];
   gmail_draft?: {
     draft_id: string;
     recipient: string;
@@ -77,6 +78,17 @@ interface ApplicationData {
     created_at: string;
   };
 }
+
+interface Contact {
+  email: string;
+  kind: 'job_posting' | 'hiring' | 'general' | 'other';
+  source_url: string;
+  on_site?: boolean;
+}
+
+const CONTACT_LABEL: Record<string, string> = {
+  job_posting: 'From the job posting', hiring: 'HR / careers', general: 'General company email', other: 'Company email',
+};
 
 interface ApplicationSummary {
   id: number;
@@ -116,6 +128,10 @@ function ApplicationStudioContent() {
   const [gmailConfigError, setGmailConfigError] = useState<string | null>(null);
   const [isConnectingGmail, setIsConnectingGmail] = useState(false);
   const [showDraftModal, setShowDraftModal] = useState(false);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [findingRecipient, setFindingRecipient] = useState(false);
+  const [recipientMessage, setRecipientMessage] = useState('');
+  const [searchedFor, setSearchedFor] = useState<number | null>(null);
   const [draftRecipient, setDraftRecipient] = useState('');
   const [includeAttachment, setIncludeAttachment] = useState(true);
   const [userConfirmed, setUserConfirmed] = useState(false);
@@ -197,12 +213,38 @@ function ApplicationStudioContent() {
         generateEmailForApp(fullApp.id, fullApp.resume_version_id);
       }
 
-      // Only a real address written in the job posting is suggested; nothing is guessed
-      setDraftRecipient(fullApp.job?.contact_emails?.[0] || '');
+      // Only real addresses (job posting, company website, Google) are used; nothing is guessed
+      setContacts(fullApp.contacts || []);
+      setDraftRecipient(fullApp.contacts?.[0]?.email || fullApp.job?.contact_emails?.[0] || '');
+      setRecipientMessage('');
+      setSearchedFor(null);
       return fullApp;
     } catch (err: any) {
       console.error(`Failed to fetch full application ${appId}:`, err);
       return null;
+    }
+  };
+
+  const findRecipient = async (appId: number, force = false) => {
+    setFindingRecipient(true);
+    setRecipientMessage('');
+    try {
+      const data = await apiFetch(`/applications/${appId}/find-recipient${force ? '?force=true' : ''}`, { method: 'POST' });
+      setContacts(data.contacts || []);
+      if (data.recipient) setDraftRecipient(data.recipient);
+      setRecipientMessage(data.message || '');
+    } catch (err: any) {
+      setRecipientMessage(err?.message || 'Could not search for a recipient right now.');
+    } finally {
+      setFindingRecipient(false);
+      setSearchedFor(appId);
+    }
+  };
+
+  const openDraftModal = () => {
+    setShowDraftModal(true);
+    if (selectedApp && !draftRecipient.trim() && searchedFor !== selectedApp.id) {
+      findRecipient(selectedApp.id);
     }
   };
 
@@ -774,7 +816,7 @@ function ApplicationStudioContent() {
                     </span>
 
                     <button
-                      onClick={() => setShowDraftModal(true)}
+                      onClick={openDraftModal}
                       className="bg-accent hover:bg-accent-hover text-white font-bold text-xs px-5 py-2.5 rounded-xl transition-all shadow-xs flex items-center gap-2"
                     >
                       <Send className="w-3.5 h-3.5" /> Create Gmail Draft
@@ -847,9 +889,17 @@ function ApplicationStudioContent() {
               <div className="p-3 bg-accent-soft border border-accent/30 rounded-xl space-y-1">
                 <div className="flex items-center justify-between">
                   <span className="font-bold text-accent text-xs">Sender Account (From)</span>
-                  <span className="text-[10px] bg-surface border border-accent/30 text-accent font-bold px-2 py-0.5 rounded-md">
-                    Connected Gmail
-                  </span>
+                  {gmailConnected ? (
+                    <span className="text-[10px] bg-ok-soft border border-ok/30 text-ok font-bold px-2 py-0.5 rounded-md">Connected</span>
+                  ) : (
+                    <button
+                      onClick={handleConnectGmail}
+                      disabled={isConnectingGmail}
+                      className="text-[11px] bg-accent hover:bg-accent-hover text-white font-bold px-2.5 py-1 rounded-md"
+                    >
+                      {isConnectingGmail ? 'Opening Google...' : 'Connect Gmail'}
+                    </button>
+                  )}
                 </div>
                 <div className="font-semibold text-xs text-fg flex items-center gap-1.5">
                   <Mail className="w-3.5 h-3.5 text-accent" />
@@ -870,11 +920,35 @@ function ApplicationStudioContent() {
                   placeholder="Paste the recruiter's real email address"
                   className="w-full bg-inset border border-line-strong rounded-xl p-2.5 text-xs text-fg focus:outline-none focus:border-accent"
                 />
-                <p className="text-[11px] text-muted">
-                  {selectedApp?.job?.contact_emails?.length
-                    ? `Found in the job posting: ${selectedApp.job.contact_emails.join(', ')}`
-                    : 'No contact email is written in this job posting. Use the address from the job page or the recruiter.'}
-                </p>
+                {findingRecipient ? (
+                  <p className="text-[11px] text-pending flex items-center gap-1.5">
+                    <RefreshCw className="w-3 h-3 animate-spin" /> Looking for a real email on the company&apos;s website and Google...
+                  </p>
+                ) : contacts.length > 0 ? (
+                  <div className="space-y-1">
+                    {contacts.map((c) => (
+                      <button
+                        key={c.email}
+                        type="button"
+                        onClick={() => setDraftRecipient(c.email)}
+                        className={`w-full text-left p-2 rounded-lg border text-[11px] transition-all ${draftRecipient === c.email ? 'border-accent bg-accent-soft' : 'border-line bg-inset hover:border-accent/50'}`}
+                      >
+                        <span className="font-bold text-fg block">{c.email}</span>
+                        <span className="text-muted">{CONTACT_LABEL[c.kind] || 'Company email'}{c.source_url ? ` · found on ${c.source_url.replace(/^https?:\/\//, '').slice(0, 60)}` : ''}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-muted">
+                    {recipientMessage || 'Searching the company website for a contact email...'} You can also type the recruiter&apos;s address.
+                  </p>
+                )}
+                {selectedApp && !findingRecipient && (
+                  <button type="button" onClick={() => findRecipient(selectedApp.id, true)}
+                          className="text-[11px] text-accent font-bold underline">
+                    Search again
+                  </button>
+                )}
               </div>
 
               <div className="p-3 bg-inset rounded-xl border border-line space-y-1">

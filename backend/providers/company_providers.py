@@ -190,3 +190,97 @@ class FirecrawlCompanyResearchProvider:
             "sources": [{"source_url": site, "provider": f"firecrawl ({how})", "raw_data": {"characters": len(page)}}],
             "claims": claims,
         }
+
+
+# ---- recruiter / company contact emails (real addresses only) ---------------------------
+EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+SKIP_LOCAL = ("noreply", "no-reply", "donotreply", "do-not-reply", "privacy", "abuse", "legal", "dpo", "gdpr",
+              "unsubscribe", "postmaster", "webmaster", "mailer", "example", "test", "user", "name", "email",
+              "yourname", "someone", "sentry", "wixpress")
+RANK = [("hiring", ("hr", "careers", "career", "jobs", "job", "recruit", "recruiting", "recruitment", "talent",
+                    "hiring", "hire", "people", "apply", "cv", "resume", "join")),
+        ("general", ("info", "contact", "hello", "hi", "office", "admin", "team", "enquiries", "inquiries", "general"))]
+
+
+def _email_kind(email: str) -> Optional[str]:
+    local = email.split("@")[0].lower()
+    if any(s == local or local.startswith(s) for s in SKIP_LOCAL) or email.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg")):
+        return None
+    for kind, words in RANK:
+        if any(local == w or local.startswith(w) or local.endswith(w) for w in words):
+            return kind
+    return "other"
+
+
+def extract_emails(text: str) -> List[str]:
+    out: List[str] = []
+    for e in EMAIL_RE.findall(text or ""):
+        e = e.strip(".").lower()
+        if e not in out and _email_kind(e):
+            out.append(e)
+    return out
+
+
+def rank_contacts(found: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    order = {"job_posting": 0, "hiring": 1, "general": 2, "other": 3}
+    seen, out = set(), []
+    for c in sorted(found, key=lambda c: (order.get(c["kind"], 9), 0 if c.get("on_site") else 1)):
+        if c["email"] not in seen:
+            seen.add(c["email"])
+            out.append(c)
+    return out[:6]
+
+
+def _raw_markdown(api_key: str, url: str) -> str:
+    resp = requests.post("https://api.firecrawl.dev/v1/scrape", timeout=30,
+                         headers={"Authorization": f"Bearer {api_key}"},
+                         json={"url": url, "formats": ["markdown"], "onlyMainContent": False})
+    if resp.status_code != 200:
+        return ""
+    return ((resp.json() or {}).get("data") or {}).get("markdown") or ""
+
+
+def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
+    """Look for real contact addresses: the company's own contact/careers pages, then Google results.
+    Google results are only accepted when the address uses the company's own domain."""
+    found: List[Dict[str, str]] = []
+    fc_key = os.getenv("FIRECRAWL_API_KEY", "")
+    serp_key = os.getenv("SERPAPI_KEY") or os.getenv("SERP_API_KEY", "")
+    domain = _domain(website) if website else ""
+    if website and fc_key:
+        for path in ("/contact", "/careers", "", "/contact-us", "/about"):
+            url = website.rstrip("/") + path
+            try:
+                with tool_call("firecrawl:scrape", f"contact emails on {url}") as tc:
+                    emails = extract_emails(_raw_markdown(fc_key, url))
+                    tc["summary"] = f"{len(emails)} email(s)"
+            except Exception as e:
+                run_warn(f"Could not read {url}: {e}")
+                continue
+            for e in emails:
+                found.append({"email": e, "kind": _email_kind(e), "source_url": url, "on_site": True})
+            if any(c["kind"] == "hiring" for c in found):
+                break
+    elif website and not fc_key:
+        run_warn("FIRECRAWL_API_KEY is missing, so the company's contact page could not be read.")
+    if serp_key and not any(c["kind"] == "hiring" for c in found):
+        q = f'"@{domain}" email careers OR hr OR jobs' if domain else f'"{company}" hr email careers'
+        try:
+            with tool_call("serpapi:google", f"contact email for {company!r}") as tc:
+                resp = requests.get("https://serpapi.com/search", timeout=20,
+                                    params={"engine": "google", "q": q, "num": 10, "hl": "en", "api_key": serp_key})
+                data = resp.json() if resp.status_code == 200 else {}
+                n = 0
+                for r in data.get("organic_results") or []:
+                    for e in extract_emails(" ".join(str(r.get(k) or "") for k in ("snippet", "title"))):
+                        ed = e.split("@")[1]
+                        if (domain and (ed == domain or ed.endswith("." + domain))) or \
+                           (not domain and _domain_matches_company("https://" + ed, company)):
+                            found.append({"email": e, "kind": _email_kind(e), "source_url": r.get("link") or "", "on_site": False})
+                            n += 1
+                tc["summary"] = f"{n} matching email(s)"
+        except Exception as e:
+            run_warn(f"Google contact search failed: {e}")
+    contacts = rank_contacts(found)
+    return {"contacts": contacts,
+            "message": "" if contacts else f"No public contact email for {company} was found on its website or in Google results."}

@@ -226,6 +226,8 @@ def get_application(
             "application_url": job.application_url if job else "",
             "contact_emails": contact_emails(job)
         },
+        "contacts": ([{"email": e, "kind": "job_posting", "source_url": job.application_url or job.source_url or ""}
+                      for e in contact_emails(job)] + (cr.cached_contacts(db, comp) or [])) if job else [],
         "company": {
             "id": comp.id if comp else None,
             "name": comp.name if comp else (job.company if job else "Company"),
@@ -358,6 +360,32 @@ def update_application_email(
         "body": email_ver.body,
         "tone": email_ver.tone
     }
+
+@router.post("/{app_id}/find-recipient")
+def find_recipient(app_id: int, force: bool = False, user_id: int = Depends(get_current_user_id),
+                   db: Session = Depends(get_db)):
+    """Find a REAL recipient: the job posting first, then the company's own website and Google results."""
+    app_obj = db.query(Application).filter(Application.id == app_id, Application.user_id == user_id).first()
+    if not app_obj:
+        raise HTTPException(status_code=404, detail="Application workspace not found")
+    job = db.query(Job).filter(Job.id == app_obj.job_id).first()
+    comp = db.query(Company).filter(Company.id == app_obj.company_id).first() if app_obj.company_id else None
+    posting = [{"email": e, "kind": "job_posting", "source_url": (job.application_url or job.source_url or "") if job else "",
+                "on_site": False} for e in contact_emails(job)]
+    if posting and not force:
+        return {"contacts": posting, "recipient": posting[0]["email"], "message": ""}
+    with track_run(user_id, "email", f"Find recipient email for {comp.name if comp else 'company'}",
+                   input_summary={"application_id": app_id}) as run:
+        run.step("Search company website and Google", 1, 1)
+        found = cr.find_contacts(db, comp, (job.application_url or job.source_url) if job else None, force=force) if comp \
+            else {"contacts": [], "message": "This application has no company."}
+        db.commit()
+        contacts = posting + [c for c in found["contacts"] if c["email"] not in {p["email"] for p in posting}]
+        run.set_output({"found": len(contacts), "cached": found.get("cached"),
+                        "domains": sorted({c["email"].split("@")[1] for c in contacts})})
+        return {"contacts": contacts, "recipient": contacts[0]["email"] if contacts else "",
+                "message": "" if contacts else found.get("message", "")}
+
 
 @router.post("/{app_id}/gmail-draft")
 def create_gmail_draft(

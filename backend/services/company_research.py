@@ -91,6 +91,33 @@ def payload(db: Session, comp: Company, rec: Optional[CompanyResearch]) -> Dict[
         "engineering_info": "", "mission_info": rec.mission_info if ok else "", "recent_news": [],
         "careers_url": rec.careers_url or "", "confidence_status": rec.confidence_status,
         "research_timestamp": rec.research_timestamp,
-        "sources": [{"source_url": s.source_url, "provider": s.provider} for s in sources],
+        "sources": [{"source_url": s.source_url, "provider": s.provider} for s in sources if s.provider != "contact_emails"],
         "claims": [{"claim_text": c.claim_text, "source_url": c.source_url, "fact_type": c.fact_type} for c in claims] if ok else [],
     }
+
+
+CONTACTS_PROVIDER = "contact_emails"
+
+
+def cached_contacts(db: Session, comp: Optional[Company]) -> Optional[list]:
+    if not comp:
+        return None
+    row = (db.query(CompanyResearchSource).join(CompanyResearch, CompanyResearch.id == CompanyResearchSource.research_id)
+           .filter(CompanyResearch.company_id == comp.id, CompanyResearchSource.provider == CONTACTS_PROVIDER)
+           .order_by(CompanyResearchSource.id.desc()).first())
+    return (row.raw_data or {}).get("contacts", []) if row else None
+
+
+def find_contacts(db: Session, comp: Company, job_url: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+    """Real recipient addresses for a company (cached). Never guesses an address."""
+    from ..providers.company_providers import find_contact_emails
+    cached = None if force else cached_contacts(db, comp)
+    if cached is not None:
+        return {"contacts": cached, "cached": True,
+                "message": "" if cached else f"No public contact email for {comp.name} was found earlier."}
+    rec = research_and_save(db, comp, job_url)          # makes sure the official website is known
+    out = find_contact_emails(comp.name, comp.official_website)
+    db.add(CompanyResearchSource(research_id=rec.id, source_url=comp.official_website or "",
+                                 provider=CONTACTS_PROVIDER, raw_data={"contacts": out["contacts"]}))
+    db.flush()
+    return {**out, "cached": False}

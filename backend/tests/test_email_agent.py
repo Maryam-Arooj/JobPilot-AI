@@ -197,3 +197,43 @@ def test_application_flow_without_keys_is_honest(monkeypatch):
     bad = client.post(f"/applications/{data['id']}/gmail-draft", headers=h,
                       json={"recipient": "not-an-email", "subject": "s", "body": "b", "user_confirmed": True})
     assert bad.status_code == 400
+
+
+# ---------------- recipient finder ----------------
+def test_extract_and_rank_real_emails():
+    text = ("Write to info@acmeanalytics.com or careers@acmeanalytics.com. noreply@acmeanalytics.com "
+            "privacy@acmeanalytics.com logo@2x.png [mail](mailto:hr@acmeanalytics.com)")
+    emails = cp.extract_emails(text)
+    assert "noreply@acmeanalytics.com" not in emails and "privacy@acmeanalytics.com" not in emails
+    assert "logo@2x.png" not in emails
+    ranked = cp.rank_contacts([{"email": e, "kind": cp._email_kind(e), "source_url": "s", "on_site": True} for e in emails])
+    assert ranked[0]["kind"] == "hiring" and ranked[-1]["email"] == "info@acmeanalytics.com"
+
+
+def test_find_contacts_site_then_google_domain_only(monkeypatch):
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "k")
+    monkeypatch.setenv("SERPAPI_KEY", "s")
+    pages = {"https://acmeanalytics.com/contact": "Contact: info@acmeanalytics.com"}
+
+    def fake_post(url, **kw):
+        return _resp(200, {"data": {"markdown": pages.get(kw["json"]["url"], "")}})
+    google = {"organic_results": [{"snippet": "Send CVs to jobs@acmeanalytics.com", "link": "https://x.pk/post"},
+                                  {"snippet": "or someone.random@gmail.com", "link": "https://y"}]}
+    with mock.patch.object(cp.requests, "post", side_effect=fake_post), \
+         mock.patch.object(cp.requests, "get", return_value=_resp(200, google)):
+        out = cp.find_contact_emails("Acme Analytics", "https://acmeanalytics.com")
+    emails = [c["email"] for c in out["contacts"]]
+    assert emails == ["jobs@acmeanalytics.com", "info@acmeanalytics.com"]   # gmail from Google is not trusted
+
+
+def test_find_recipient_endpoint_uses_posting_first():
+    db = SessionLocal()
+    u = User(email=f"r-{uuid.uuid4().hex[:6]}@test.local", password_hash="x"); db.add(u); db.commit(); db.refresh(u)
+    job = Job(title="Dev", company=f"Rec {uuid.uuid4().hex[:5]}", description="Email your CV to talent@rec.pk")
+    db.add(job); db.commit(); db.refresh(job)
+    from backend.models.applications import Application
+    a = Application(user_id=u.id, job_id=job.id, status="DRAFT_READY"); db.add(a); db.commit(); db.refresh(a)
+    uid, aid = u.id, a.id
+    db.close()
+    r = client.post(f"/applications/{aid}/find-recipient", headers={"Authorization": f"Bearer {create_token(uid)}"})
+    assert r.status_code == 200 and r.json()["recipient"] == "talent@rec.pk"
