@@ -71,6 +71,7 @@ interface ApplicationData {
     method?: 'ai' | 'template';
   };
   contacts?: Contact[];
+  cv_attachment?: { source: 'resume_version' | 'profile' | null; version_id?: number | null; label: string };
   gmail_draft?: {
     draft_id: string;
     recipient: string;
@@ -681,20 +682,20 @@ function ApplicationStudioContent() {
                 <h4 className="text-sm font-bold text-fg flex items-center gap-1.5">
                   <FileText className="w-4 h-4 text-accent" /> Resume Attachment
                 </h4>
-                {selectedApp.resume_version_id ? (
+                {selectedApp.cv_attachment?.source ? (
                   <div className="p-3.5 bg-inset rounded-xl border border-line flex items-center justify-between text-xs">
                     <div>
-                      <span className="font-bold text-fg">Saved CV version #{selectedApp.resume_version_id}</span>
-                      <p className="text-muted text-[11px]">Exported and attached when you create the Gmail draft</p>
+                      <span className="font-bold text-fg">{selectedApp.cv_attachment.label}</span>
+                      <p className="text-muted text-[11px]">Attached automatically as a PDF when you create the Gmail draft</p>
                     </div>
                     <span className="bg-ok-soft text-ok border border-ok/30 text-xs font-bold px-2.5 py-1 rounded-lg flex items-center gap-1">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-ok" /> Linked
+                      <CheckCircle2 className="w-3.5 h-3.5 text-ok" /> Ready
                     </span>
                   </div>
                 ) : (
-                  <div className="p-3.5 bg-inset rounded-xl border border-dashed border-line-strong text-xs">
-                    <span className="font-bold text-fg">No CV linked to this application</span>
-                    <p className="text-muted text-[11px] mt-0.5">Drafts are created without an attachment until a saved CV version is linked.</p>
+                  <div className="p-3.5 bg-bad-soft rounded-xl border border-bad/30 text-xs">
+                    <span className="font-bold text-bad">No CV found</span>
+                    <p className="text-fg-2 text-[11px] mt-0.5">Upload your CV on the Confirm page first, so it can be attached to the draft.</p>
                   </div>
                 )}
               </div>
@@ -960,7 +961,9 @@ function ApplicationStudioContent() {
                     onChange={(e) => setIncludeAttachment(e.target.checked)}
                     className="accent-accent rounded"
                   />
-                  <span className="font-medium text-fg-2">Attach Standard ATS Resume (PDF)</span>
+                  <span className="font-medium text-fg-2">
+                    Attach my CV (PDF){selectedApp?.cv_attachment?.label ? ` — ${selectedApp.cv_attachment.label}` : ''}
+                  </span>
                 </label>
               </div>
 

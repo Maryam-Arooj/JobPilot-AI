@@ -66,6 +66,15 @@ def _normalize(doc: Dict[str, Any]) -> Dict[str, Any]:
         "skills": [str(x) for x in skills if x] if isinstance(skills, list) else [],
         "languages": doc.get("languages") or [],
         "certifications": doc.get("certifications") or [],
+        "projects": [
+            {
+                "name": p.get("name") or p.get("title") or "",
+                "description": p.get("description") or "",
+                "technologies": ", ".join(str(t) for t in p.get("technologies")) if isinstance(p.get("technologies"), list)
+                else (p.get("technologies") or ""),
+            }
+            for p in (doc.get("projects") or []) if isinstance(p, dict) and (p.get("name") or p.get("title"))
+        ],
     }
 
 def _escape(value: Any) -> Any:
@@ -379,6 +388,19 @@ class ResumeExporter:
                 ]))
                 story.append(skills_table)
 
+            # 5b. Projects
+            if doc.get("projects"):
+                story.append(Spacer(1, 6))
+                story.append(HRFlowable(width="100%", thickness=0.5, color=EU_BORDER, spaceAfter=6))
+                story.append(Paragraph("PROJECTS", section_hdr_style))
+                for proj in doc["projects"]:
+                    line = f"<b>{proj['name']}</b>"
+                    if proj["technologies"]:
+                        line += f" ({proj['technologies']})"
+                    if proj["description"]:
+                        line += f" — {proj['description']}"
+                    story.append(Paragraph(f"• {line}", body_style))
+
             # 6. Certifications & Accreditations
             certifications = doc.get("certifications") or []
             if isinstance(certifications, list) and certifications:
@@ -455,6 +477,13 @@ class ResumeExporter:
             if doc["skills"]:
                 docx_doc.add_heading("Skills", level=1)
                 docx_doc.add_paragraph(" • ".join(doc["skills"]))
+            if doc.get("projects"):
+                docx_doc.add_heading("Projects", level=1)
+                for proj in doc["projects"]:
+                    line = proj["name"] + (f" ({proj['technologies']})" if proj["technologies"] else "")
+                    if proj["description"]:
+                        line += f" — {proj['description']}"
+                    docx_doc.add_paragraph(f"• {line}")
             certifications = doc.get("certifications") or []
             if certifications and isinstance(certifications, list):
                 docx_doc.add_heading("Certifications & Accreditations", level=1)

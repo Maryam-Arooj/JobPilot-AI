@@ -19,24 +19,53 @@ from ..services import company_research as cr
 
 router = APIRouter(prefix="/applications", tags=["applications"])
 
-def _build_resume_attachment(db: Session, app_obj: Application, user_id: int, fmt: str, base_name: str):
-    """Export the application's resume version, only if it belongs to the current user."""
-    if not app_obj.resume_version_id:
-        return None, None
-    rv = (
-        db.query(ResumeVersion)
-        .join(ResumeDocument, ResumeDocument.id == ResumeVersion.resume_id)
-        .filter(ResumeVersion.id == app_obj.resume_version_id, ResumeDocument.user_id == user_id)
-        .first()
-    )
-    if not rv or not rv.content_snapshot:
-        return None, None
+def _owned_version(db: Session, version_id: Optional[int], user_id: int) -> Optional[ResumeVersion]:
+    if not version_id:
+        return None
+    return (db.query(ResumeVersion).join(ResumeDocument, ResumeDocument.id == ResumeVersion.resume_id)
+            .filter(ResumeVersion.id == version_id, ResumeDocument.user_id == user_id).first())
+
+
+def _latest_version(db: Session, user_id: int) -> Optional[ResumeVersion]:
+    return (db.query(ResumeVersion).join(ResumeDocument, ResumeDocument.id == ResumeVersion.resume_id)
+            .filter(ResumeDocument.user_id == user_id).order_by(ResumeVersion.id.desc()).first())
+
+
+def resolve_cv(db: Session, app_obj: Application, user_id: int, link: bool = False) -> Dict[str, Any]:
+    """Which CV goes with this application: linked version -> newest saved version -> the CV profile itself."""
+    rv = _owned_version(db, app_obj.resume_version_id, user_id)
+    if rv and rv.content_snapshot:
+        return {"source": "resume_version", "version_id": rv.id, "content": rv.content_snapshot,
+                "label": f"Saved CV version #{rv.id}"}
+    rv = _latest_version(db, user_id)
+    if rv and rv.content_snapshot:
+        if link:
+            app_obj.resume_version_id = rv.id
+        return {"source": "resume_version", "version_id": rv.id, "content": rv.content_snapshot,
+                "label": f"Your newest saved CV (version #{rv.id})"}
+    prof = _profile_dict(db, user_id)
+    has_cv = (prof["personal"].get("name") or prof["personal"].get("full_name")) and \
+        (prof["experience"] or prof["education"] or prof["skills"] or prof["projects"])
+    if has_cv:
+        return {"source": "profile", "version_id": None, "content": prof, "label": "CV built from your saved profile"}
+    return {"source": None, "version_id": None, "content": None, "label": ""}
+
+
+def _build_resume_attachment(db: Session, app_obj: Application, user_id: int, fmt: str, base_name: str = "CV"):
+    """Export the CV for this application. Always the user's own data."""
+    cv = resolve_cv(db, app_obj, user_id, link=True)
+    if not cv["content"]:
+        return None, None, cv
+    personal = cv["content"].get("personal") or cv["content"].get("header") or {}
+    name = (personal.get("name") or personal.get("full_name") or cv["content"].get("name") or "").strip()
+    safe = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")
+    fname = f"{safe}_CV" if safe else base_name
     try:
-        if fmt.lower() == "pdf":
-            return export_resume_pdf(rv.content_snapshot), f"{base_name}.pdf"
-        return export_resume_docx(rv.content_snapshot), f"{base_name}.docx"
+        if fmt.lower() == "docx":
+            return export_resume_docx(cv["content"]), f"{fname}.docx", cv
+        return export_resume_pdf(cv["content"]), f"{fname}.pdf", cv
     except Exception:
-        raise HTTPException(status_code=500, detail="Resume attachment could not be generated")
+        raise HTTPException(status_code=500, detail="Your CV could not be turned into a PDF. Try DOCX or save a CV version first.")
 
 
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -145,7 +174,8 @@ def create_application(
             user_id=user_id,
             job_id=req.job_id,
             company_id=company_id,
-            resume_version_id=req.resume_version_id,
+            resume_version_id=(req.resume_version_id if _owned_version(db, req.resume_version_id, user_id) else
+                               (getattr(_latest_version(db, user_id), "id", None))),
             status="DRAFT_READY"
         )
         db.add(app_obj)
@@ -235,6 +265,7 @@ def get_application(
             "research": research
         },
         "resume_version_id": app_obj.resume_version_id,
+        "cv_attachment": {k: v for k, v in resolve_cv(db, app_obj, user_id).items() if k != "content"},
         "email_version": {
             "tone": latest_email.tone,
             "subject": latest_email.subject,
@@ -410,9 +441,11 @@ def create_gmail_draft(
         # Export selected resume attachment if requested
         attachment_bytes, attachment_name = None, None
         if req.include_attachment:
-            attachment_bytes, attachment_name = _build_resume_attachment(db, app_obj, user_id, req.attachment_format, "Resume")
+            attachment_bytes, attachment_name, cv = _build_resume_attachment(db, app_obj, user_id, req.attachment_format)
             if not attachment_bytes:
-                run.warn("No resume version is linked to this application, so no attachment was added")
+                raise HTTPException(status_code=400, detail="No CV found to attach. Upload your CV on the Confirm page "
+                                    "(or untick 'Attach CV'). No draft was created.")
+            run.log("info", f"Attached {attachment_name} ({cv['label']})")
 
         sender_email = None  # the draft is created in, and sent from, the connected Gmail account
 
@@ -459,7 +492,7 @@ def create_gmail_draft(
             description=f"Gmail draft {draft_record.draft_id} created for recipient {req.recipient}"
         ))
         db.commit()
-        run.set_output({"draft_created": True, "has_attachment": bool(attachment_bytes)})
+        run.set_output({"draft_created": True, "has_attachment": bool(attachment_bytes), "attachment": attachment_name})
         return {
             "status": "success",
             "draft_id": draft_record.draft_id,
@@ -507,7 +540,7 @@ def send_application_email(
 
     attachment_bytes, attachment_name = None, None
     if req.include_attachment:
-        attachment_bytes, attachment_name = _build_resume_attachment(db, app_obj, user_id, req.attachment_format, "Application_Resume")
+        attachment_bytes, attachment_name, _cv = _build_resume_attachment(db, app_obj, user_id, req.attachment_format)
 
     result = _send_or_raise(
         to_email=req.recipient,

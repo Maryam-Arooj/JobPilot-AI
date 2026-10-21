@@ -237,3 +237,51 @@ def test_find_recipient_endpoint_uses_posting_first():
     db.close()
     r = client.post(f"/applications/{aid}/find-recipient", headers={"Authorization": f"Bearer {create_token(uid)}"})
     assert r.status_code == 200 and r.json()["recipient"] == "talent@rec.pk"
+
+
+# ---------------- CV attachment ----------------
+def _app_for(profile=True):
+    from backend.models.applications import Application
+    db = SessionLocal()
+    u = User(email=f"cv-{uuid.uuid4().hex[:6]}@test.local", password_hash="x"); db.add(u); db.commit(); db.refresh(u)
+    if profile:
+        db.add(CareerProfile(user_id=u.id, **PROFILE))
+    job = Job(title="Dev", company=f"Att {uuid.uuid4().hex[:5]}", description="Python")
+    db.add(job); db.commit(); db.refresh(job)
+    a = Application(user_id=u.id, job_id=job.id, status="DRAFT_READY"); db.add(a); db.commit(); db.refresh(a)
+    ids = (u.id, a.id)
+    db.close()
+    return ids
+
+
+def test_draft_attaches_cv_from_profile_automatically():
+    uid, aid = _app_for(profile=True)
+    h = {"Authorization": f"Bearer {create_token(uid)}"}
+    assert client.get(f"/applications/{aid}", headers=h).json()["cv_attachment"]["source"] == "profile"
+    captured = {}
+
+    def fake_draft(self, **kw):
+        captured.update(kw)
+        return {"provider": "gmail_live", "draft_id": "d1"}
+    from backend.providers.email_providers import GmailEmailProvider
+    with mock.patch.object(GmailEmailProvider, "create_draft", fake_draft):
+        r = client.post(f"/applications/{aid}/gmail-draft", headers=h, json={
+            "recipient": "hr@company.com", "subject": "s", "body": "b", "user_confirmed": True})
+    assert r.status_code == 200, r.text
+    assert captured["attachment_bytes"][:4] == b"%PDF"
+    assert captured["attachment_filename"] == "Jordan_Avery_CV.pdf"
+    assert r.json()["has_attachment"] is True
+
+
+def test_draft_without_any_cv_is_refused_not_sent_empty():
+    uid, aid = _app_for(profile=False)
+    r = client.post(f"/applications/{aid}/gmail-draft", headers={"Authorization": f"Bearer {create_token(uid)}"},
+                    json={"recipient": "hr@company.com", "subject": "s", "body": "b", "user_confirmed": True})
+    assert r.status_code == 400 and "No CV found" in r.json()["detail"]
+
+
+def test_exporter_includes_projects():
+    from backend.services.resume_exporter import export_resume_docx
+    import io, docx
+    d = docx.Document(io.BytesIO(export_resume_docx(PROFILE)))
+    assert any("Sales Pipeline" in p.text for p in d.paragraphs)
