@@ -162,31 +162,31 @@ export function ResumePreview({
     <div className="space-y-4">
       
       {/* Document Control Bar */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-surface border border-line rounded-xl text-xs shadow-xs print:hidden">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-white border border-[#E2E8F0] rounded-xl text-xs shadow-xs print:hidden">
         <div className="flex items-center gap-2">
-          <FileText className="w-4 h-4 text-accent" />
-          <span className="font-bold text-fg">{resume?.title || 'Untitled CV'}</span>
+          <FileText className="w-4 h-4 text-[#003366]" />
+          <span className="font-bold text-[#0F172A]">{resume?.title || 'Untitled CV'}</span>
         </div>
 
         <div className="flex items-center gap-2">
           <a
             href={`/jobs?query=${encodeURIComponent(resume?.title || '')}&source=cv`}
-            className="px-3 py-1.5 rounded-lg border border-accent/30 bg-accent-soft hover:bg-accent-soft text-accent font-bold text-xs transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
+            className="px-3 py-1.5 rounded-lg border border-[#BAE6FD] bg-[#F0F9FF] hover:bg-[#E0F2FE] text-[#003366] font-bold text-xs transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
           >
-            <Sparkles className="w-3.5 h-3.5 text-accent" />
+            <Sparkles className="w-3.5 h-3.5 text-[#0284C7]" />
             <span>Find Jobs for CV</span>
           </a>
           <button
             onClick={() => window.print()}
-            className="px-3 py-1.5 rounded-lg border border-line bg-inset hover:bg-surface-2 text-fg font-semibold text-xs transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
+            className="px-3 py-1.5 rounded-lg border border-[#E2E8F0] bg-[#F8FAFC] hover:bg-[#F1F5F9] text-[#0F172A] font-semibold text-xs transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
           >
-            <Printer className="w-3.5 h-3.5 text-muted" />
+            <Printer className="w-3.5 h-3.5 text-[#64748B]" />
             <span>Print / Dialog</span>
           </button>
           <button
             onClick={handleDownloadPDF}
             disabled={isExporting}
-            className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-accent to-accent hover:from-accent-hover hover:to-accent text-white font-bold text-xs transition-all flex items-center gap-1.5 shadow-sm hover:shadow-md disabled:opacity-75 cursor-pointer"
+            className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-[#003366] to-[#1E3A8A] hover:from-[#002244] hover:to-[#003366] text-white font-bold text-xs transition-all flex items-center gap-1.5 shadow-sm hover:shadow-md disabled:opacity-75 cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
             <span>{isExporting ? 'Generating PDF...' : 'Download PDF File'}</span>
@@ -194,9 +194,7 @@ export function ResumePreview({
         </div>
       </div>
 
-      {/* Dark document frame (screen only). Not positioned, so the print rules can still
-          place #printable-cv at the top-left of the sheet. */}
-      <div className="bg-inset border border-line rounded-2xl p-4 sm:p-6 print:p-0 print:border-0 print:bg-transparent print:rounded-none">
+      <div>
       {/* ISOLATED PRINTABLE CV WRAPPER */}
       <div id="printable-cv" className="w-full cv-paper">
         {/* RENDER TEMPLATE STYLE 0: EUROPASS OFFICIAL STANDARD */}

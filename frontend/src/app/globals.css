@@ -252,13 +252,6 @@ textarea::placeholder {
   letter-spacing: -0.011em;
 }
 
-/* Soft drop shadow so the white page reads as a document on the dark frame.
-   Screen only: print and PDF export get the plain page. */
-@media screen {
-  .cv-paper > * {
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.35), 0 16px 40px -12px rgb(0 0 0 / 0.65);
-  }
-}
 
 /* ==========================================================================
    CV EXCLUSIVE PRINT MEDIA STYLES
