@@ -71,7 +71,28 @@ def get_my_profile(user_id: int = Depends(get_current_user_id), db: Session = De
         db.add(profile)
         db.commit()
         db.refresh(profile)
+    else:
+        _repair_skills(db, profile)
     return _serialize_profile(profile, db)
+
+
+def _repair_skills(db: Session, profile: CareerProfile) -> None:
+    """Older versions saved skills as one text like '["Python", "SQL"]'. Store them as a real list."""
+    from ..ai_agents.profile_agent import flatten_skills, normalize_skills
+    prof = dict(profile.professional or {})
+    current = prof.get("skills")
+    if isinstance(current, list) and all(isinstance(x, str) and not x.strip().startswith("[") and "," not in x for x in current) \
+            and isinstance(profile.skills, dict) and all(isinstance(v, list) and all(isinstance(i, str) and "," not in i
+                                                         and not i.strip().startswith("[") for i in v)
+                                                         for v in profile.skills.values()):
+        return
+    fixed = normalize_skills({"technical": [current or [], profile.skills or {}]}) if current else normalize_skills(profile.skills or {})
+    profile.skills = fixed
+    if current is not None:
+        prof["skills"] = flatten_skills(fixed)
+        profile.professional = prof
+    db.commit()
+    db.refresh(profile)
 
 @router.put("/me")
 def update_my_profile(

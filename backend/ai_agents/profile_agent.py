@@ -149,9 +149,36 @@ def _stated_years(text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def expand_skill_values(value: Any) -> List[str]:
+    """One skill value -> list of skill names. Handles lists, JSON text like '["Python", "SQL"]'
+    (saved by older versions) and comma/semicolon/newline/bullet separated text."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        out: List[str] = []
+        for v in value:
+            out.extend(expand_skill_values(v))
+        return out
+    if isinstance(value, dict):
+        return expand_skill_values(value.get("name") or value.get("skill") or list(value.values()))
+    text = str(value).strip()
+    if not text:
+        return []
+    if text[0] in "[{":
+        try:
+            import json
+            return expand_skill_values(json.loads(text))
+        except ValueError:
+            text = text.strip("[]{}")
+    parts = re.split(r"\s*(?:[,;\n|•·]|\s-\s)\s*", text) if re.search(r"[,;\n|•·]|\s-\s", text) else [text]
+    return [p.strip().strip('"\'').strip() for p in parts if p and p.strip().strip('"\'').strip()]
+
+
 def normalize_skills(skills: Any) -> Dict[str, List[str]]:
     """Any skills shape -> disjoint categories, each skill once (case-insensitive)."""
     buckets: Dict[str, List[str]] = {c: [] for c in SKILL_CATEGORIES}
+    if isinstance(skills, str):
+        skills = expand_skill_values(skills)
     if isinstance(skills, dict):
         items = [(k, v) for k, v in skills.items()]
     elif isinstance(skills, list):
@@ -165,7 +192,7 @@ def normalize_skills(skills: Any) -> Dict[str, List[str]]:
         cat = str(key).lower()
         if cat not in buckets:
             cat = "technical"
-        for s in (values if isinstance(values, list) else [values]):
+        for s in expand_skill_values(values):
             name = str(s or "").strip().strip(",;")
             if not name or name.lower() in seen:
                 continue

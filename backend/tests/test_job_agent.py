@@ -246,3 +246,27 @@ def test_remote_jobs_are_preferred_within_similar_scores():
     ranked = _rank([{"match_score": 70, "remote": False, "id": 1}, {"match_score": 67, "remote": True, "id": 2},
                     {"match_score": None, "remote": True, "id": 3}])
     assert [r["id"] for r in ranked] == [2, 1, 3]
+
+
+def test_skills_saved_as_json_text_still_match():
+    raw = '["React", "Git", "Python", "JavaScript", "TypeScript"]'
+    job = {"title": "AI Agent Engineer", "description": "Python, JavaScript and TypeScript required. Docker a plus."}
+    for prof in ({"professional": {"skills": raw}}, {"skills": {"technical": raw}}, {"skills": "Python, SQL"}):
+        assert "Python" in jm.candidate_skills(prof)
+    r = jm.score_job({"professional": {"skills": raw}}, job)
+    assert r["matched_skills"] == ["Python", "JavaScript", "TypeScript"] and r["missing_skills"] == ["Docker"]
+
+
+def test_profile_get_repairs_text_skills():
+    db = SessionLocal()
+    u = User(email=f"sk-{uuid.uuid4().hex[:6]}@test.local", password_hash="x"); db.add(u); db.commit(); db.refresh(u)
+    db.add(CareerProfile(user_id=u.id, personal={}, professional={"skills": '["Python", "SQL"]'},
+                         skills={"technical": ['["Python", "SQL"]']})); db.commit()
+    uid = u.id
+    db.close()
+    r = client.get("/profiles/me", headers={"Authorization": f"Bearer {create_token(uid)}"})
+    assert r.status_code == 200
+    db = SessionLocal()
+    p = db.query(CareerProfile).filter(CareerProfile.user_id == uid).first()
+    assert p.professional["skills"] == ["Python", "SQL"] and p.skills["technical"] == ["Python", "SQL"]
+    db.close()

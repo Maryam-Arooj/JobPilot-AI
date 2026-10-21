@@ -50,8 +50,8 @@ def job_text(job: Dict[str, Any]) -> str:
 
 def candidate_skills(profile: Dict[str, Any]) -> List[str]:
     prof = (profile or {}).get("professional") or {}
-    skills = prof.get("skills") if isinstance(prof.get("skills"), list) and prof.get("skills") else None
-    flat = flatten_skills({"technical": skills} if skills else ((profile or {}).get("skills") or {}))
+    # both places the CV skills can live; any format (list, JSON text, comma text)
+    flat = flatten_skills({"technical": [prof.get("skills") or [], (profile or {}).get("skills") or []]})
     return [s for s in flat if s.strip().lower() not in GENERIC_SKILLS and len(s.strip()) > 1]
 
 
