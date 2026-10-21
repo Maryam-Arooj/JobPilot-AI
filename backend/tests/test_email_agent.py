@@ -327,3 +327,19 @@ def test_tomba_domain_search(monkeypatch):
     with mock.patch.object(cp.requests, "get", return_value=_resp(200, data)):
         out = cp.find_contact_emails("Cedar Global Solutions", "https://cedargs.com")
     assert out["contacts"][0]["email"] == "hr@cedargs.com" and "Tomba.io" in out["checked"]
+
+
+def test_job_page_and_linkedin_post_emails(monkeypatch):
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "k"); monkeypatch.setenv("SERPAPI_KEY", "s")
+
+    def fake_post(url, **kw):
+        return _resp(200, {"data": {"markdown": "Apply: send your CV to talent.cedar@gmail.com", "links": []}})
+    google = {"organic_results": [
+        {"title": "Cedar Global Solutions is hiring", "snippet": "Send CV to hr@cedargs.com", "link": "https://linkedin.com/posts/1"},
+        {"title": "Other company hiring", "snippet": "Send CV to someone@gmail.com", "link": "https://linkedin.com/posts/2"}]}
+    with mock.patch.object(cp.requests, "post", side_effect=fake_post), \
+         mock.patch.object(cp.requests, "get", return_value=_resp(200, google)):
+        out = cp.find_job_contact_emails("AI Engineer", "Cedar Global Solutions", ["https://www.linkedin.com/jobs/view/1"])
+    emails = [c["email"] for c in out["contacts"]]
+    assert "talent.cedar@gmail.com" in emails and "hr@cedargs.com" in emails
+    assert "someone@gmail.com" not in emails                       # post about another company is ignored

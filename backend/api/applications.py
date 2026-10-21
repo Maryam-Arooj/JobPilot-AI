@@ -416,10 +416,32 @@ def find_recipient(app_id: int, force: bool = False, user_id: int = Depends(get_
     with track_run(user_id, "email", f"Find recipient email for {comp.name if comp else 'company'}",
                    input_summary={"application_id": app_id}) as run:
         run.step("Search company website and Google", 1, 1)
-        found = cr.find_contacts(db, comp, (job.application_url or job.source_url) if job else None, force=force) if comp \
-            else {"contacts": [], "message": "This application has no company."}
+        from ..providers.company_providers import find_job_contact_emails
+        from ..services.agent_runs import current_run
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor
+        # the job's own pages + public LinkedIn posts run at the same time as the company search
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            job_future = pool.submit(contextvars.copy_context().run, find_job_contact_emails,
+                                     job.title if job else "", comp.name if comp else (job.company if job else ""),
+                                     [u for u in {(job.application_url or ""), (job.source_url or "")} if u] if job else [])
+            found = cr.find_contacts(db, comp, (job.application_url or job.source_url) if job else None, force=force) if comp \
+                else {"contacts": [], "message": "This application has no company.", "checked": []}
+            try:
+                job_found = job_future.result(timeout=40)
+            except Exception as e:
+                run.warn(f"Job-page recipient search failed: {e}")
+                job_found = {"contacts": [], "checked": []}
         db.commit()
-        contacts = posting + [c for c in found["contacts"] if c["email"] not in {p["email"] for p in posting}]
+        seen = {p["email"] for p in posting}
+        contacts = posting[:]
+        for c in job_found["contacts"] + found["contacts"]:
+            if c["email"] not in seen:
+                seen.add(c["email"]); contacts.append(c)
+        found["checked"] = job_found.get("checked", []) + found.get("checked", [])
+        if job_found["contacts"]:
+            cr.remember_contacts(db, comp, [c for c in contacts if c not in posting])
+            db.commit()
         run.set_output({"found": len(contacts), "cached": found.get("cached"),
                         "domains": sorted({c["email"].split("@")[1] for c in contacts})})
         return {"contacts": contacts, "recipient": contacts[0]["email"] if contacts else "",

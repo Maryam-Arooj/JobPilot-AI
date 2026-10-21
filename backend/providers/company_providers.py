@@ -422,3 +422,57 @@ def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
     return {"contacts": contacts, "checked": checked,
             "message": "" if contacts else (f"{company} does not publish a contact email on its website or in Google results. "
                                             "Big companies usually take applications only through the job's Apply link.")}
+
+
+def find_job_contact_emails(job_title: str, company: str, urls: List[str]) -> Dict[str, Any]:
+    """Recruiter emails written on the job's own public pages (LinkedIn job page, Apply page) and in public
+    LinkedIn posts about this job/company found by Google. Any email domain is accepted here, because a
+    recruiter may post from Gmail, but only when the page/post is about this company."""
+    fc_key = os.getenv("FIRECRAWL_API_KEY", "")
+    serp_key = os.getenv("SERPAPI_KEY") or os.getenv("SERP_API_KEY", "")
+    comp_l = re.sub(r"[^a-z0-9]", "", (company or "").lower())
+    found: List[Dict[str, str]] = []
+
+    def mentions_company(text: str) -> bool:
+        t = re.sub(r"[^a-z0-9]", "", (text or "").lower())
+        return bool(comp_l) and (comp_l in t or any(tok in t for tok in _name_tokens(company) if len(tok) > 3))
+
+    def page(url: str):
+        def run():
+            with tool_call("firecrawl:scrape", f"recruiter email on the job page {urlparse(url).netloc}") as tc:
+                md, _links = _scrape_for_contacts(fc_key, url)
+                emails = extract_emails(md)
+                tc["summary"] = f"{len(emails)} email(s)"
+            return [(e, url, "the job page") for e in emails]
+        return run
+
+    def google(q: str, label: str):
+        def run():
+            with tool_call("serpapi:google", q[:80]) as tc:
+                resp = requests.get("https://serpapi.com/search", timeout=15,
+                                    params={"engine": "google", "q": q, "num": 10, "hl": "en", "api_key": serp_key})
+                data = resp.json() if resp.status_code == 200 else {}
+                hits = []
+                for r in data.get("organic_results") or []:
+                    text = " ".join(str(r.get(k) or "") for k in ("title", "snippet"))
+                    text += " " + " ".join(str(x) for x in (r.get("snippet_highlighted_words") or []))
+                    if mentions_company(text):
+                        hits += [(e, r.get("link") or "", label) for e in extract_emails(text)]
+                tc["summary"] = f"{len(hits)} email(s)"
+            return hits
+        return run
+
+    jobs = []
+    if fc_key:
+        for u in dict.fromkeys(u for u in urls if u and u.startswith("http")):
+            jobs.append(page(u))
+    if serp_key and company:
+        jobs.append(google(f'site:linkedin.com "{company}" hiring email OR "send your cv" OR "send cv" OR "share your cv"',
+                           "a public LinkedIn post"))
+        if job_title:
+            jobs.append(google(f'"{company}" "{job_title}" email OR "send your cv" OR "send resume"', "a public post about this job"))
+    for res in _parallel(jobs):
+        for e, src, label in res or []:
+            found.append({"email": e, "kind": "job_posting", "source_url": src, "on_site": False, "where": label})
+    return {"contacts": rank_contacts(found),
+            "checked": (["the job's own pages"] if fc_key and urls else []) + (["public LinkedIn posts"] if serp_key else [])}

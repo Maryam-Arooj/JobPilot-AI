@@ -100,7 +100,7 @@ def payload(db: Session, comp: Company, rec: Optional[CompanyResearch]) -> Dict[
 
 
 CONTACTS_PROVIDER = "contact_emails"
-CONTACTS_VERSION = 3
+CONTACTS_VERSION = 4
 
 
 def cached_contacts(db: Session, comp: Optional[Company]) -> Optional[list]:
@@ -142,3 +142,14 @@ def find_contacts(db: Session, comp: Company, job_url: Optional[str] = None, for
                                                                         "checked": out.get("checked", [])}))
     db.flush()
     return {**out, "cached": False}
+
+
+def remember_contacts(db: Session, comp: Optional[Company], contacts: list) -> None:
+    """Save the merged list (job pages + company) in the company's contact cache."""
+    if not comp:
+        return
+    row = (db.query(CompanyResearchSource).join(CompanyResearch, CompanyResearch.id == CompanyResearchSource.research_id)
+           .filter(CompanyResearch.company_id == comp.id, CompanyResearchSource.provider == CONTACTS_PROVIDER)
+           .order_by(CompanyResearchSource.id.desc()).first())
+    if row:
+        row.raw_data = {**(row.raw_data or {}), "contacts": contacts, "v": CONTACTS_VERSION}

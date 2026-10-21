@@ -85,6 +85,7 @@ interface Contact {
   kind: 'job_posting' | 'hiring' | 'general' | 'other';
   source_url: string;
   on_site?: boolean;
+  where?: string;
 }
 
 const CONTACT_LABEL: Record<string, string> = {
@@ -941,7 +942,7 @@ function ApplicationStudioContent() {
                         className={`w-full text-left p-2 rounded-lg border text-[11px] transition-all ${draftRecipient === c.email ? 'border-accent bg-accent-soft' : 'border-line bg-inset hover:border-accent/50'}`}
                       >
                         <span className="font-bold text-fg block">{c.email}</span>
-                        <span className="text-muted">{CONTACT_LABEL[c.kind] || 'Company email'}{c.source_url ? ` · found on ${c.source_url.replace(/^https?:\/\//, '').slice(0, 60)}` : ''}</span>
+                        <span className="text-muted">{c.where ? `Found in ${c.where}` : (CONTACT_LABEL[c.kind] || 'Company email')}{c.source_url ? ` · found on ${c.source_url.replace(/^https?:\/\//, '').slice(0, 60)}` : ''}</span>
                       </button>
                     ))}
                   </div>
