@@ -9,10 +9,11 @@ class CompanyResearchAgent:
     def __init__(self):
         self.provider = FirecrawlCompanyResearchProvider()
 
-    def research(self, company_name: str, official_website: str = None, job_url: str = None) -> Dict[str, Any]:
+    def research(self, company_name: str, official_website: str = None, job_url: str = None,
+                 trusted_website: str = None) -> Dict[str, Any]:
         if not company_name or not company_name.strip():
             raise ValueError("Company name is required for research")
-        data = self.provider.research_company(company_name.strip(), official_website, job_url)
+        data = self.provider.research_company(company_name.strip(), official_website, job_url, trusted_website)
         claims = []
         for c in data.get("claims", []):
             text = str(c.get("claim_text", "")).replace("\n", " ").strip()

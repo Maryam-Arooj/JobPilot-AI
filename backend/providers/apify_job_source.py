@@ -40,6 +40,12 @@ def adapt_apify_item(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "source": "apify:linkedin",
         "industry": _first(item, "industries", "companyIndustry"),
         "external_id": _first(item, "id", "jobId"),
+        # real facts LinkedIn shows on the job/company page (used by the Email Agent; never invented)
+        "company_website": _first(item, "companyWebsite", "companyUrl", "website") or "",
+        "company_linkedin": _first(item, "companyLinkedinUrl", "companyLinkedInUrl", "companyLink") or "",
+        "poster_name": _first(item, "jobPosterName", "posterName", "recruiterName") or "",
+        "poster_title": _first(item, "jobPosterTitle", "posterTitle", "recruiterTitle") or "",
+        "poster_url": _first(item, "jobPosterProfileUrl", "posterProfileUrl", "recruiterProfileUrl") or "",
     }
 
 

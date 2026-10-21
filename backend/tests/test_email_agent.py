@@ -369,3 +369,26 @@ def test_wrong_site_from_old_version_is_dropped():
         cr.research_and_save(db, c)
     assert c.official_website is None
     db.rollback(); db.close()
+
+
+def test_apify_keeps_linkedin_company_website_and_recruiter():
+    from backend.providers.apify_job_source import adapt_apify_item
+    j = adapt_apify_item({"title": "AI Engineer", "companyName": "Cedar Global Solutions", "location": "Lahore, Pakistan",
+                          "companyWebsite": "https://www.cgsinc.us", "jobPosterName": "Sara Khan",
+                          "jobPosterTitle": "Talent Acquisition", "jobPosterProfileUrl": "https://linkedin.com/in/sara"})
+    assert j["company_website"] == "https://www.cgsinc.us" and j["poster_name"] == "Sara Khan"
+    p = cp.FirecrawlCompanyResearchProvider(api_key="")
+    site, how = p.find_official_website("Cedar Global Solutions", trusted=j["company_website"])
+    assert site == "https://cgsinc.us" and "LinkedIn" in how          # trusted even though the domain differs
+
+
+def test_apify_contact_crawl(monkeypatch):
+    for k in ("SERPAPI_KEY", "SERP_API_KEY", "FIRECRAWL_API_KEY", "HUNTER_API_KEY", "TOMBA_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("APIFY_API_TOKEN", "t")
+    items = [{"url": "https://cgsinc.us/careers", "emails": ["recruiting@cgsinc.us"]},
+             {"url": "https://cgsinc.us/privacy", "emails": ["privacy@cgsinc.us"]}]
+    with mock.patch.object(cp.requests, "post", return_value=_resp(201, items)):
+        out = cp.find_contact_emails("Cedar Global Solutions", "https://cgsinc.us")
+    assert [c["email"] for c in out["contacts"]] == ["recruiting@cgsinc.us"]
+    assert out["contacts"][0]["source_url"] == "https://cgsinc.us/careers"

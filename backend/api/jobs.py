@@ -90,6 +90,15 @@ def _save_jobs(db: Session, user_id: int, query: str, intent: Dict[str, Any], jo
         if existing is not None:
             if j.get("remote") and not existing.remote:
                 existing.remote = True  # found again by a remote / work-from-home search
+            # keep LinkedIn's company website / recruiter for jobs saved before we stored them
+            for src in j.get("sources", []):
+                raw = src.get("raw_data") or {}
+                if raw.get("company_website") or raw.get("poster_name"):
+                    have = db.query(JobSource).filter(JobSource.job_id == existing.id,
+                                                      JobSource.provider == src.get("provider", "search")).all()
+                    if not any((h.raw_data or {}).get("company_website") or (h.raw_data or {}).get("poster_name") for h in have):
+                        db.add(JobSource(job_id=existing.id, provider=src.get("provider", "search"),
+                                         source_url=src.get("source_url", ""), raw_data=raw))
             saved.append(existing)
             continue
         job = Job(

@@ -106,7 +106,9 @@ class FirecrawlCompanyResearchProvider:
 
     # ---- 1. official website ------------------------------------------------------------
     def find_official_website(self, company: str, job_url: Optional[str] = None,
-                              known: Optional[str] = None) -> Tuple[Optional[str], str]:
+                              known: Optional[str] = None, trusted: Optional[str] = None) -> Tuple[Optional[str], str]:
+        if trusted and _is_official_candidate(trusted):
+            return _root(trusted), "the company's LinkedIn page"
         if known and _is_official_candidate(known) and _domain_matches_company(known, company):
             return _root(known), "saved company website"
         if job_url and _is_official_candidate(job_url) and _domain_matches_company(job_url, company):
@@ -194,12 +196,13 @@ class FirecrawlCompanyResearchProvider:
             run_log("warn", f"Company research: {total - kept} AI statement(s) not supported by the website were removed")
         return out
 
-    def research_company(self, company_name: str, official_website: str = None, job_url: str = None) -> Dict[str, Any]:
+    def research_company(self, company_name: str, official_website: str = None, job_url: str = None,
+                         trusted_website: str = None) -> Dict[str, Any]:
         empty = {"company_name": company_name, "official_website": None, "overview": "", "industry": "",
                  "products_services": [], "technology_info": [], "engineering_info": "", "mission_info": "",
                  "recent_news": [], "careers_url": "", "sources": [], "claims": []}
         try:
-            site, how = self.find_official_website(company_name, job_url, official_website)
+            site, how = self.find_official_website(company_name, job_url, official_website, trusted_website)
         except Exception as e:
             run_warn(f"Company website lookup failed: {e}")
             return {**empty, "status": "unavailable", "message": "The company website could not be looked up right now."}
@@ -306,6 +309,30 @@ def _parallel(funcs: List[Any], max_workers: int = 6) -> List[Any]:
                 run_warn(f"Contact search step failed: {e}")
                 out.append(None)
         return out
+
+
+def apify_contact_crawl(token: str, website: str) -> List[Tuple[str, str]]:
+    """Apify 'Contact Details Scraper': crawls up to ~20 pages of the company's own site and returns every
+    published email with the page it was on (same Apify token as the LinkedIn jobs search)."""
+    actor = os.getenv("APIFY_CONTACT_ACTOR", "vdrmota~contact-info-scraper").replace("/", "~")
+    limit = int(os.getenv("APIFY_CONTACT_PAGES", "20"))
+    with tool_call("apify:contact-details", f"crawl {website} (up to {limit} pages)") as tc:
+        resp = requests.post(f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items",
+                             params={"token": token, "timeout": 60}, timeout=75,
+                             json={"startUrls": [{"url": website}], "maxDepth": 2, "maxRequestsPerStartUrl": limit,
+                                   "sameDomain": True, "considerChildFrames": False})
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(f"Apify returned HTTP {resp.status_code}")
+        hits: List[Tuple[str, str]] = []
+        for item in resp.json() or []:
+            if not isinstance(item, dict):
+                continue
+            for e in item.get("emails") or []:
+                for clean in extract_emails(str(e)):
+                    if clean not in {h[0] for h in hits}:
+                        hits.append((clean, item.get("url") or website))
+        tc["summary"] = f"{len(hits)} email(s) on {len(resp.json() or [])} page(s)"
+    return hits
 
 
 def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
@@ -446,6 +473,14 @@ def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
         return more
 
     extra = collect(_parallel(jobs))
+    apify_token = os.getenv("APIFY_API_TOKEN") or os.getenv("APIFY_API_KEY", "")
+    if website and apify_token and not any(c["kind"] == "hiring" for c in found):
+        extra = []   # the deep crawl below covers the linked pages too
+        try:
+            for e, url in apify_contact_crawl(apify_token, website):
+                found.append({"email": e, "kind": _email_kind(e), "source_url": url, "on_site": True})
+        except Exception as ex:
+            run_warn(f"Apify contact crawl failed: {ex}")
     if fc_key and extra and not any(c["kind"] == "hiring" for c in found):
         extra = list(dict.fromkeys(extra))[:3]           # second wave: contact/careers pages linked from the site
         scraped.update(extra)
@@ -454,7 +489,8 @@ def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
     checked = ([f"website {website}"] if website else ["no official website found"]) + \
         (["company pages"] if website and fc_key else []) + (["Google"] if serp_key else []) + \
         (["web search"] if fc_key else []) + (["Hunter.io"] if domain and hunter_key else []) + \
-        (["Tomba.io"] if domain and tomba_key and tomba_secret else [])
+        (["Tomba.io"] if domain and tomba_key and tomba_secret else []) + \
+        (["deep site crawl (Apify)"] if website and (os.getenv("APIFY_API_TOKEN") or os.getenv("APIFY_API_KEY")) else [])
     return {"contacts": contacts, "checked": checked,
             "message": "" if contacts else (f"{company} does not publish a contact email on its website or in Google results. "
                                             "Big companies usually take applications only through the job's Apply link.")}

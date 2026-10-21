@@ -53,15 +53,32 @@ def _fresh(rec: CompanyResearch) -> bool:
     return datetime.now(timezone.utc) - ts < RETRY_AFTER
 
 
-def research_and_save(db: Session, comp: Company, job_url: Optional[str] = None, force: bool = False) -> CompanyResearch:
+def linkedin_facts(db: Session, job: Optional[Job]) -> Dict[str, str]:
+    """Company website + recruiter that LinkedIn itself showed for this job (saved from the Apify job search)."""
+    from ..models.jobs import JobSource
+    out = {"company_website": "", "company_linkedin": "", "poster_name": "", "poster_title": "", "poster_url": ""}
+    if not job:
+        return out
+    for src in db.query(JobSource).filter(JobSource.job_id == job.id).all():
+        raw = src.raw_data or {}
+        for k in out:
+            if not out[k] and isinstance(raw.get(k), str):
+                out[k] = raw[k].strip()
+    return out
+
+
+def research_and_save(db: Session, comp: Company, job_url: Optional[str] = None, force: bool = False,
+                      trusted_website: Optional[str] = None) -> CompanyResearch:
     from ..providers.company_providers import site_is_company
-    if comp.official_website and not site_is_company(comp.official_website, comp.name):
+    if trusted_website:
+        pass                                   # the company's own LinkedIn page names this website
+    elif comp.official_website and not site_is_company(comp.official_website, comp.name):
         comp.official_website = None          # saved by the old, loose matcher (e.g. cedar.money for Cedar Global Solutions)
         force = True
     rec = latest(db, comp.id)
     if rec and not force and _fresh(rec) and (rec.confidence_status or "").endswith("_v2"):
         return rec
-    data = CompanyResearchAgent().research(comp.name, comp.official_website, job_url)
+    data = CompanyResearchAgent().research(comp.name, comp.official_website, job_url, trusted_website)
     comp.official_website = data.get("official_website") or None
     if data.get("industry"):
         comp.industry = data["industry"]
@@ -106,7 +123,7 @@ def payload(db: Session, comp: Company, rec: Optional[CompanyResearch]) -> Dict[
 
 
 CONTACTS_PROVIDER = "contact_emails"
-CONTACTS_VERSION = 5
+CONTACTS_VERSION = 6
 
 
 def cached_contacts(db: Session, comp: Optional[Company]) -> Optional[list]:
@@ -120,7 +137,8 @@ def cached_contacts(db: Session, comp: Optional[Company]) -> Optional[list]:
     return (row.raw_data or {}).get("contacts", [])
 
 
-def find_contacts(db: Session, comp: Company, job_url: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
+def find_contacts(db: Session, comp: Company, job_url: Optional[str] = None, force: bool = False,
+                  trusted_website: Optional[str] = None) -> Dict[str, Any]:
     """Real recipient addresses for a company (cached). Never guesses an address."""
     from ..providers.company_providers import find_contact_emails
     cached = None if force else cached_contacts(db, comp)
@@ -128,6 +146,9 @@ def find_contacts(db: Session, comp: Company, job_url: Optional[str] = None, for
         return {"contacts": cached, "cached": True,
                 "message": "" if cached else f"No public contact email for {comp.name} was found earlier."}
     from ..providers.company_providers import FirecrawlCompanyResearchProvider
+    if trusted_website:
+        from ..providers.company_providers import _root
+        comp.official_website = _root(trusted_website)
     if not comp.official_website:                        # only the website is needed, not the full research
         try:
             site, _how = FirecrawlCompanyResearchProvider().find_official_website(comp.name, job_url)

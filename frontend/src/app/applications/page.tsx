@@ -135,6 +135,7 @@ function ApplicationStudioContent() {
   const [recipientMessage, setRecipientMessage] = useState('');
   const [recipientChecked, setRecipientChecked] = useState<string[]>([]);
   const [recipientLinkedin, setRecipientLinkedin] = useState('');
+  const [recruiter, setRecruiter] = useState<{ name?: string; title?: string; profile_url?: string } | null>(null);
   const [searchedFor, setSearchedFor] = useState<number | null>(null);
   const [draftRecipient, setDraftRecipient] = useState('');
   const [includeAttachment, setIncludeAttachment] = useState(true);
@@ -241,6 +242,7 @@ function ApplicationStudioContent() {
       setRecipientMessage(data.message || '');
       setRecipientChecked(data.checked || []);
       setRecipientLinkedin(data.linkedin_url || '');
+      setRecruiter(data.recruiter || null);
     } catch (err: any) {
       setRecipientMessage(err?.message || 'Could not search for a recipient right now.');
     } finally {
@@ -958,6 +960,17 @@ function ApplicationStudioContent() {
                     {recipientMessage && selectedApp?.job?.application_url && (
                       <a href={selectedApp.job.application_url} target="_blank" rel="noreferrer" className="text-accent font-bold underline">
                         Open the job&apos;s Apply page
+                      </a>
+                    )}
+                  </div>
+                )}
+                {recruiter?.name && (
+                  <div className="p-2 rounded-lg border border-line bg-inset text-[11px]">
+                    <span className="font-bold text-fg">Recruiter who posted this job: {recruiter.name}</span>
+                    {recruiter.title && <span className="text-muted"> · {recruiter.title}</span>}
+                    {recruiter.profile_url && (
+                      <a href={recruiter.profile_url} target="_blank" rel="noreferrer" className="text-accent font-bold underline block">
+                        Open their LinkedIn profile
                       </a>
                     )}
                   </div>

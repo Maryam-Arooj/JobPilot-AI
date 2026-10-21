@@ -23,13 +23,18 @@ def _job_url(db: Session, comp: Company):
     return (job.application_url or job.source_url) if job else None
 
 
+def _trusted_site(db: Session, comp: Company):
+    job = db.query(Job).filter(Job.company == comp.name).order_by(Job.id.desc()).first()
+    return cr.linkedin_facts(db, job).get("company_website") or None
+
+
 @router.post("/{company_id}/research")
 def research_company(company_id: int, force: bool = True, user_id: int = Depends(get_current_user_id),
                      db: Session = Depends(get_db)):
     comp = _company(db, company_id)
     with track_run(user_id, "email", f"Research {comp.name}", input_summary={"company": comp.name}) as run:
         run.step("Find website, read it, summarise", 1, 1)
-        rec = cr.research_and_save(db, comp, _job_url(db, comp), force=force)
+        rec = cr.research_and_save(db, comp, _job_url(db, comp), force=force, trusted_website=_trusted_site(db, comp))
         db.commit()
         out = cr.payload(db, comp, rec)
         run.set_output({"status": out["status"], "website": out["official_website"], "claims": len(out["claims"])})

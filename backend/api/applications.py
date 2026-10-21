@@ -170,7 +170,8 @@ def create_application(
 
         run.step("Company research", 1, 3)
         try:
-            rec = cr.research_and_save(db, comp, job.application_url or job.source_url) if comp else None
+            rec = cr.research_and_save(db, comp, job.application_url or job.source_url,
+                                       trusted_website=cr.linkedin_facts(db, job).get("company_website") or None) if comp else None
             research_status = cr.payload(db, comp, rec)["status"] if comp else "not_researched"
         except Exception as e:
             run.warn(f"Company research failed: {e}")
@@ -315,7 +316,8 @@ def generate_application_email(
         run.step("Load company research", 1, 2)
         if comp and cr.latest(db, comp.id) is None:
             try:
-                cr.research_and_save(db, comp, job.application_url or job.source_url)
+                cr.research_and_save(db, comp, job.application_url or job.source_url,
+                                     trusted_website=cr.linkedin_facts(db, job).get("company_website") or None)
             except Exception as e:
                 run.warn(f"Company research failed: {e}")
 
@@ -417,6 +419,7 @@ def find_recipient(app_id: int, force: bool = False, user_id: int = Depends(get_
                    input_summary={"application_id": app_id}) as run:
         run.step("Search company website and Google", 1, 1)
         from ..providers.company_providers import find_job_contact_emails
+        li = cr.linkedin_facts(db, job)
         from ..services.agent_runs import current_run
         import contextvars
         from concurrent.futures import ThreadPoolExecutor
@@ -425,7 +428,8 @@ def find_recipient(app_id: int, force: bool = False, user_id: int = Depends(get_
             job_future = pool.submit(contextvars.copy_context().run, find_job_contact_emails,
                                      job.title if job else "", comp.name if comp else (job.company if job else ""),
                                      [u for u in {(job.application_url or ""), (job.source_url or "")} if u] if job else [])
-            found = cr.find_contacts(db, comp, (job.application_url or job.source_url) if job else None, force=force) if comp \
+            found = cr.find_contacts(db, comp, (job.application_url or job.source_url) if job else None, force=force,
+                                     trusted_website=li.get("company_website") or None) if comp \
                 else {"contacts": [], "message": "This application has no company.", "checked": []}
             try:
                 job_found = job_future.result(timeout=40)
@@ -446,6 +450,8 @@ def find_recipient(app_id: int, force: bool = False, user_id: int = Depends(get_
                         "domains": sorted({c["email"].split("@")[1] for c in contacts})})
         return {"contacts": contacts, "recipient": contacts[0]["email"] if contacts else "",
                 "checked": found.get("checked", []), "linkedin_url": _linkedin_url(job),
+                "recruiter": {"name": li.get("poster_name"), "title": li.get("poster_title"),
+                              "profile_url": li.get("poster_url")} if li.get("poster_name") else None,
                 "message": "" if contacts else found.get("message", "")}
 
 
