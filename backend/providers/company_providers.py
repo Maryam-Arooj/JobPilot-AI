@@ -231,56 +231,111 @@ def rank_contacts(found: List[Dict[str, str]]) -> List[Dict[str, str]]:
     return out[:6]
 
 
-def _raw_markdown(api_key: str, url: str) -> str:
-    resp = requests.post("https://api.firecrawl.dev/v1/scrape", timeout=30,
+def _scrape_for_contacts(api_key: str, url: str) -> Tuple[str, List[str]]:
+    """Firecrawl one page; returns (markdown with mailto links kept, links on the page)."""
+    resp = requests.post("https://api.firecrawl.dev/v1/scrape", timeout=20,
                          headers={"Authorization": f"Bearer {api_key}"},
-                         json={"url": url, "formats": ["markdown"], "onlyMainContent": False})
+                         json={"url": url, "formats": ["markdown", "links"], "onlyMainContent": False, "timeout": 15000})
     if resp.status_code != 200:
-        return ""
-    return ((resp.json() or {}).get("data") or {}).get("markdown") or ""
+        return "", []
+    data = (resp.json() or {}).get("data") or {}
+    return data.get("markdown") or "", [l for l in data.get("links") or [] if isinstance(l, str)]
+
+
+CONTACT_PATH = re.compile(r"(contact|career|jobs|join|hiring|recruit|work-with-us|about|team|reach)", re.I)
+
+
+def _parallel(funcs: List[Any], max_workers: int = 6) -> List[Any]:
+    """Run small network calls at the same time, keeping the agent-run context (dashboard tool calls)."""
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(contextvars.copy_context().run, f) for f in funcs]
+        out = []
+        for fut in futures:
+            try:
+                out.append(fut.result(timeout=30))
+            except Exception as e:  # one slow/failed page never blocks the rest
+                run_warn(f"Contact search step failed: {e}")
+                out.append(None)
+        return out
 
 
 def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
-    """Look for real contact addresses: the company's own contact/careers pages, then Google results.
-    Google results are only accepted when the address uses the company's own domain."""
+    """Look for real contact addresses on the company's own pages and in Google results, all at once.
+    On-site addresses are trusted (the company published them); Google addresses only on the company's domain."""
     found: List[Dict[str, str]] = []
     fc_key = os.getenv("FIRECRAWL_API_KEY", "")
     serp_key = os.getenv("SERPAPI_KEY") or os.getenv("SERP_API_KEY", "")
     domain = _domain(website) if website else ""
-    if website and fc_key:
-        for path in ("/contact", "/careers", "", "/contact-us", "/about"):
-            url = website.rstrip("/") + path
-            try:
-                with tool_call("firecrawl:scrape", f"contact emails on {url}") as tc:
-                    emails = extract_emails(_raw_markdown(fc_key, url))
-                    tc["summary"] = f"{len(emails)} email(s)"
-            except Exception as e:
-                run_warn(f"Could not read {url}: {e}")
-                continue
-            for e in emails:
-                found.append({"email": e, "kind": _email_kind(e), "source_url": url, "on_site": True})
-            if any(c["kind"] == "hiring" for c in found):
-                break
-    elif website and not fc_key:
-        run_warn("FIRECRAWL_API_KEY is missing, so the company's contact page could not be read.")
-    if serp_key and not any(c["kind"] == "hiring" for c in found):
-        q = f'"@{domain}" email careers OR hr OR jobs' if domain else f'"{company}" hr email careers'
-        try:
-            with tool_call("serpapi:google", f"contact email for {company!r}") as tc:
-                resp = requests.get("https://serpapi.com/search", timeout=20,
+    scraped: set = set()
+
+    def page_job(url: str):
+        def run():
+            with tool_call("firecrawl:scrape", f"contact emails on {url}") as tc:
+                md, links = _scrape_for_contacts(fc_key, url)
+                emails = extract_emails(md)
+                tc["summary"] = f"{len(emails)} email(s)"
+            return ("page", url, emails, links)
+        return run
+
+    def google_job(q: str):
+        def run():
+            with tool_call("serpapi:google", q[:80]) as tc:
+                resp = requests.get("https://serpapi.com/search", timeout=15,
                                     params={"engine": "google", "q": q, "num": 10, "hl": "en", "api_key": serp_key})
                 data = resp.json() if resp.status_code == 200 else {}
-                n = 0
+                hits = []
                 for r in data.get("organic_results") or []:
-                    for e in extract_emails(" ".join(str(r.get(k) or "") for k in ("snippet", "title"))):
+                    text = " ".join(str(r.get(k) or "") for k in ("snippet", "title"))
+                    text += " " + " ".join(str(x) for x in (r.get("snippet_highlighted_words") or []))
+                    for e in extract_emails(text):
                         ed = e.split("@")[1]
                         if (domain and (ed == domain or ed.endswith("." + domain))) or \
                            (not domain and _domain_matches_company("https://" + ed, company)):
-                            found.append({"email": e, "kind": _email_kind(e), "source_url": r.get("link") or "", "on_site": False})
-                            n += 1
-                tc["summary"] = f"{n} matching email(s)"
-        except Exception as e:
-            run_warn(f"Google contact search failed: {e}")
+                            hits.append((e, r.get("link") or ""))
+                tc["summary"] = f"{len(hits)} matching email(s)"
+            return ("google", q, hits, [])
+        return run
+
+    jobs = []
+    if website and fc_key:
+        for path in ("", "/contact", "/contact-us", "/careers", "/about"):
+            url = website.rstrip("/") + path
+            scraped.add(url.rstrip("/"))
+            jobs.append(page_job(url))
+    elif website:
+        run_warn("FIRECRAWL_API_KEY is missing, so the company's contact page could not be read.")
+    if serp_key:
+        if domain:
+            jobs.append(google_job(f'"@{domain}"'))
+            jobs.append(google_job(f'"@{domain}" careers OR hr OR jobs OR recruitment email'))
+        jobs.append(google_job(f'{company} careers email OR "hr email" OR "send your cv" OR "send your resume"'))
+
+    def collect(results):
+        more = []
+        for res in results:
+            if not res:
+                continue
+            kind, where, items, links = res
+            if kind == "page":
+                for e in items:
+                    found.append({"email": e, "kind": _email_kind(e), "source_url": where, "on_site": True})
+                for l in links:
+                    if domain and _domain(l) == domain and CONTACT_PATH.search(urlparse(l).path or "") \
+                            and l.split("#")[0].rstrip("/") not in scraped:
+                        more.append(l.split("#")[0].rstrip("/"))
+            else:
+                for e, link in items:
+                    found.append({"email": e, "kind": _email_kind(e), "source_url": link, "on_site": False})
+        return more
+
+    extra = collect(_parallel(jobs))
+    if fc_key and extra and not any(c["kind"] == "hiring" for c in found):
+        extra = list(dict.fromkeys(extra))[:3]           # second wave: contact/careers pages linked from the site
+        scraped.update(extra)
+        collect(_parallel([page_job(u) for u in extra]))
     contacts = rank_contacts(found)
     return {"contacts": contacts,
-            "message": "" if contacts else f"No public contact email for {company} was found on its website or in Google results."}
+            "message": "" if contacts else (f"{company} does not publish a contact email on its website or in Google results. "
+                                            "Big companies usually take applications only through the job's Apply link.")}

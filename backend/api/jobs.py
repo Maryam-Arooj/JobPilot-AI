@@ -14,6 +14,8 @@ from ..ai_agents.job_analysis import JobAnalysisAgent
 from ..ai_agents.job_match import JobMatchAgent
 from ..services.job_normalizer import normalize_job, deduplicate_jobs
 from ..services.agent_runs import track_run
+from ..services.locations import parse_location
+from ..services.job_normalizer import clean_company
 from ..services.job_matching import (analyze_job_with_ai, candidate_skills, candidate_title, job_text,
                                      required_years, score_job)
 
@@ -33,24 +35,10 @@ def _user_job_ids(db: Session, user_id: int) -> Set[int]:
     return ids
 
 def infer_country(location: str = "", existing_country: str = "") -> str:
-    if existing_country and len(existing_country.strip()) > 1:
-        return existing_country.strip()
-    loc = (location or "").lower()
-    if "pakistan" in loc or "lahore" in loc or "karachi" in loc or "islamabad" in loc or "rawalpindi" in loc:
-        return "Pakistan"
-    if "united states" in loc or "usa" in loc or "us " in loc or ", ca" in loc or ", ny" in loc or ", tx" in loc or ", wa" in loc or "jersey city" in loc:
-        return "United States"
-    if "united kingdom" in loc or "uk" in loc or "london" in loc or "england" in loc:
-        return "United Kingdom"
-    if "canada" in loc or "toronto" in loc or "vancouver" in loc:
-        return "Canada"
-    if "uae" in loc or "dubai" in loc or "abu dhabi" in loc or "emirates" in loc:
-        return "United Arab Emirates"
-    if "germany" in loc or "berlin" in loc or "munich" in loc:
-        return "Germany"
-    if "remote" in loc:
-        return "Remote Worldwide"
-    return "Global / Unspecified"
+    """Country from the job's own location text (stored values from older versions were sometimes wrong)."""
+    from ..services.locations import country_of
+    return country_of(location, existing_country if not (location or "").strip() else None)
+
 
 def _profile_dict(profile: Optional[CareerProfile]) -> Dict[str, Any]:
     if not profile:
@@ -61,7 +49,11 @@ def _profile_dict(profile: Optional[CareerProfile]) -> Dict[str, Any]:
 
 def _job_payload(job: Job, scored: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     body = {
-        "id": job.id, "title": job.title, "company": job.company, "location": job.location,
+        "id": job.id, "title": job.title,
+        "company": clean_company(job.company or "")[0] or "Company not disclosed",
+        "listed_by": clean_company(job.company or "")[1],
+        "location": parse_location(job.location or "")["display"] or (job.location or ""),
+        "city": parse_location(job.location or "")["city"], "region": parse_location(job.location or "")["region"],
         "country": infer_country(job.location or "", job.country or ""), "remote": job.remote,
         "employment_type": job.employment_type, "salary": job.salary, "description": job.description,
         "requirements": job.requirements, "preferred_skills": job.preferred_skills,
@@ -290,15 +282,16 @@ def list_jobs(
     for j in jobs:
         c_name = infer_country(j.location, j.country)
         if country and country.upper() != "ALL":
-            if country.lower() not in c_name.lower() and country.lower() not in j.location.lower():
+            if country.strip().lower() != c_name.lower():
                 continue
 
         match = db.query(JobMatch).filter(JobMatch.user_id == user_id, JobMatch.job_id == j.id).first()
         res.append({
             "id": j.id,
             "title": j.title,
-            "company": j.company,
-            "location": j.location,
+            "company": clean_company(j.company or "")[0] or "Company not disclosed",
+            "listed_by": clean_company(j.company or "")[1],
+            "location": parse_location(j.location or "")["display"] or (j.location or ""),
             "country": c_name,
             "remote": j.remote,
             "employment_type": j.employment_type,

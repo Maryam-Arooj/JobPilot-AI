@@ -10,6 +10,7 @@ from ..models.jobs import Job
 
 STATUS_MESSAGES = {
     "found": "",
+    "not_researched": "Company research has not run yet.",
     "not_found": "No official website could be found for this company, so the email uses only your CV and the job.",
     "unavailable": "The company website could not be read right now, so the email uses only your CV and the job.",
 }
@@ -37,6 +38,8 @@ def _status(rec: CompanyResearch) -> str:
 
 
 def _fresh(rec: CompanyResearch) -> bool:
+    if rec.confidence_status == "not_researched":
+        return False
     if _status(rec) == "found":
         return True
     ts = rec.research_timestamp
@@ -97,6 +100,7 @@ def payload(db: Session, comp: Company, rec: Optional[CompanyResearch]) -> Dict[
 
 
 CONTACTS_PROVIDER = "contact_emails"
+CONTACTS_VERSION = 2
 
 
 def cached_contacts(db: Session, comp: Optional[Company]) -> Optional[list]:
@@ -105,7 +109,9 @@ def cached_contacts(db: Session, comp: Optional[Company]) -> Optional[list]:
     row = (db.query(CompanyResearchSource).join(CompanyResearch, CompanyResearch.id == CompanyResearchSource.research_id)
            .filter(CompanyResearch.company_id == comp.id, CompanyResearchSource.provider == CONTACTS_PROVIDER)
            .order_by(CompanyResearchSource.id.desc()).first())
-    return (row.raw_data or {}).get("contacts", []) if row else None
+    if not row or (row.raw_data or {}).get("v") != CONTACTS_VERSION:
+        return None          # never searched, or searched by an older, weaker finder
+    return (row.raw_data or {}).get("contacts", [])
 
 
 def find_contacts(db: Session, comp: Company, job_url: Optional[str] = None, force: bool = False) -> Dict[str, Any]:
@@ -115,9 +121,23 @@ def find_contacts(db: Session, comp: Company, job_url: Optional[str] = None, for
     if cached is not None:
         return {"contacts": cached, "cached": True,
                 "message": "" if cached else f"No public contact email for {comp.name} was found earlier."}
-    rec = research_and_save(db, comp, job_url)          # makes sure the official website is known
+    from ..providers.company_providers import FirecrawlCompanyResearchProvider
+    if not comp.official_website:                        # only the website is needed, not the full research
+        try:
+            site, _how = FirecrawlCompanyResearchProvider().find_official_website(comp.name, job_url)
+        except Exception:
+            site = None
+        if site:
+            comp.official_website = site
     out = find_contact_emails(comp.name, comp.official_website)
+    rec = latest(db, comp.id)
+    if rec is None:                                      # a holder row so the contacts can be cached
+        rec = CompanyResearch(company_id=comp.id, overview="", products_services=[], technology_info=[],
+                              engineering_info="", mission_info="", recent_news=[], careers_url="",
+                              confidence_status="not_researched")
+        db.add(rec)
+        db.flush()
     db.add(CompanyResearchSource(research_id=rec.id, source_url=comp.official_website or "",
-                                 provider=CONTACTS_PROVIDER, raw_data={"contacts": out["contacts"]}))
+                                 provider=CONTACTS_PROVIDER, raw_data={"contacts": out["contacts"], "v": CONTACTS_VERSION}))
     db.flush()
     return {**out, "cached": False}

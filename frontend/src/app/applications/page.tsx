@@ -219,6 +219,8 @@ function ApplicationStudioContent() {
       setDraftRecipient(fullApp.contacts?.[0]?.email || fullApp.job?.contact_emails?.[0] || '');
       setRecipientMessage('');
       setSearchedFor(null);
+      // Start the recipient search in the background right away, so it is ready before "Create Gmail Draft"
+      if (!fullApp.contacts?.length) findRecipient(fullApp.id);
       return fullApp;
     } catch (err: any) {
       console.error(`Failed to fetch full application ${appId}:`, err);
@@ -232,7 +234,7 @@ function ApplicationStudioContent() {
     try {
       const data = await apiFetch(`/applications/${appId}/find-recipient${force ? '?force=true' : ''}`, { method: 'POST' });
       setContacts(data.contacts || []);
-      if (data.recipient) setDraftRecipient(data.recipient);
+      if (data.recipient) setDraftRecipient(prev => (prev.trim() ? prev : data.recipient));
       setRecipientMessage(data.message || '');
     } catch (err: any) {
       setRecipientMessage(err?.message || 'Could not search for a recipient right now.');
@@ -940,9 +942,14 @@ function ApplicationStudioContent() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-[11px] text-muted">
-                    {recipientMessage || 'Searching the company website for a contact email...'} You can also type the recruiter&apos;s address.
-                  </p>
+                  <div className="text-[11px] text-muted space-y-1">
+                    <p>{recipientMessage || 'Searching the company website for a contact email...'} You can also type the recruiter&apos;s address.</p>
+                    {recipientMessage && selectedApp?.job?.application_url && (
+                      <a href={selectedApp.job.application_url} target="_blank" rel="noreferrer" className="text-accent font-bold underline">
+                        Open the job&apos;s Apply page
+                      </a>
+                    )}
+                  </div>
                 )}
                 {selectedApp && !findingRecipient && (
                   <button type="button" onClick={() => findRecipient(selectedApp.id, true)}

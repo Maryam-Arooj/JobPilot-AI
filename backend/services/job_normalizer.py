@@ -31,11 +31,33 @@ def _as_list(v: Any, sep: str = "\n") -> List[str]:
     return [str(v)]
 
 
+JOB_BOARDS = ("rozee", "mustakbil", "indeed", "linkedin", "glassdoor", "bayt", "jooble", "careerjet", "jobz.pk",
+              "brightspyre", "ziprecruiter", "monster", "naukri", "talent.com", "simplyhired", "jobrapido", "adzuna",
+              "jora", "learn4good", "dice", "workable", "jobsora", "trabajo", "whatjobs", "jobisjob")
+
+
+def clean_company(company: str, via: str = None):
+    """Provider company -> (employer name, job board it was listed on). A job board is never shown as the employer."""
+    name = re.sub(r"\s+", " ", company or "").strip(" -|·")
+    m = re.match(r"(?i)^jobs?\s+via\s+(.+)$", name)
+    if m:
+        return "", m.group(1).strip()
+    low = name.lower()
+    if any(b in low for b in JOB_BOARDS) and len(low) < 30:
+        return "", name
+    listed = (via or "").replace("via ", "").strip() or None
+    return name, listed
+
+
 def normalize_job(raw: Dict[str, Any], provider: str) -> Dict[str, Any]:
     """Provider job -> JobPilot job. Only values the provider sent; unknown fields stay empty."""
     title = (raw.get("title") or raw.get("job_title") or "").strip()
     company = (raw.get("company") or raw.get("company_name") or "").strip()
-    location = (raw.get("location") or raw.get("job_location") or "").strip()
+    from .locations import parse_location, country_of
+    raw_location = (raw.get("location") or raw.get("job_location") or "").strip()
+    loc = parse_location(raw_location, raw.get("country"))
+    location = loc["display"] or raw_location
+    company, listed_by = clean_company(company, raw.get("via"))
     app_url = raw.get("application_url") or raw.get("url") or raw.get("link") or ""
     c_url = canonicalize_url(app_url)
 
@@ -72,7 +94,9 @@ def normalize_job(raw: Dict[str, Any], provider: str) -> Dict[str, Any]:
         "experience_years": raw.get("experience_years"),
         "industry": industry or None,
         "job_type": raw.get("job_type") or raw.get("employment_type") or None,
-        "country": raw.get("country", ""),
+        "country": country_of(raw_location, raw.get("country")),
+        "city": loc["city"],
+        "listed_by": listed_by,
         "city": raw.get("city", ""),
         "normalized_title": norm_title,
         "normalized_company": norm_company,

@@ -270,3 +270,21 @@ def test_profile_get_repairs_text_skills():
     p = db.query(CareerProfile).filter(CareerProfile.user_id == uid).first()
     assert p.professional["skills"] == ["Python", "SQL"] and p.skills["technical"] == ["Python", "SQL"]
     db.close()
+
+
+def test_locations_are_cleaned_and_countries_are_right():
+    from backend.services.locations import parse_location, country_of
+    assert parse_location("Khānewāl, Punjab, Pakistan")["display"] == "Khanewal, Punjab, Pakistan"
+    assert parse_location("Lahore, Pakistan")["display"] == "Lahore, Punjab, Pakistan"
+    assert parse_location("Karachi Division, Sindh, Pakistan")["city"] == "Karachi"
+    assert country_of("Faisalabad") == "Pakistan" and country_of("Sukkur") == "Pakistan"      # not "United Kingdom"
+    assert country_of("Toronto, ON, Canada") == "Canada"                                     # not "United States"
+    assert country_of("West Lafayette, IN") == "United States"
+    assert country_of("Remote - Pakistan") == "Pakistan" and country_of("Anywhere") == "Remote Worldwide"
+
+
+def test_job_boards_are_not_shown_as_the_employer():
+    from backend.services.job_normalizer import clean_company
+    assert clean_company("Jobs via Rozee.pk") == ("", "Rozee.pk")
+    assert clean_company("Rozee.pk")[0] == ""
+    assert clean_company("Systems Limited", "via LinkedIn") == ("Systems Limited", "LinkedIn")

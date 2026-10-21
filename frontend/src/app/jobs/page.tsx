@@ -47,6 +47,7 @@ interface JobItem {
   company: string;
   location: string;
   country?: string;
+  listed_by?: string | null;
   remote: boolean;
   employment_type?: string;
   salary?: string;
@@ -256,11 +257,9 @@ function JobsContent() {
     if (filterAlignment !== 'ALL' && job.alignment !== filterAlignment) return false;
     if (selectedCountry === 'Remote Worldwide') {
       if (!job.remote) return false;
-    } else if (selectedCountry !== 'ALL' && !(cvSearchActive && viewMode === 'recommended')) {
-      const cLower = selectedCountry.toLowerCase();
-      const jobCLower = (job.country || '').toLowerCase();
-      const jobLocLower = (job.location || '').toLowerCase();
-      if (!jobCLower.includes(cLower) && !jobLocLower.includes(cLower)) return false;
+    } else if (selectedCountry !== 'ALL') {
+      // the backend works out each job's real country from its location (e.g. "Khanewal, Punjab, Pakistan")
+      if ((job.country || '').toLowerCase() !== selectedCountry.toLowerCase()) return false;
     }
     return true;
   });
@@ -634,6 +633,7 @@ function JobsContent() {
                     <div className="flex items-center gap-3 text-xs text-muted">
                       <span className="font-medium text-fg flex items-center gap-1">
                         <Building2 className="w-3.5 h-3.5 text-subtle" /> {selectedJob.company}
+                        {selectedJob.listed_by ? <span className="text-muted font-normal">· listed on {selectedJob.listed_by}</span> : null}
                       </span>
                       <span className="flex items-center gap-1">
                         <MapPin className="w-3.5 h-3.5 text-subtle" /> {selectedJob.location}
