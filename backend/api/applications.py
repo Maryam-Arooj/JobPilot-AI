@@ -84,6 +84,14 @@ def contact_emails(job: Optional[Job]) -> List[str]:
     return found[:3]
 
 
+def _linkedin_url(job: Optional[Job]) -> str:
+    """The LinkedIn job page (where the recruiter is often named), only if the job came from LinkedIn."""
+    for u in ((job.application_url or ""), (job.source_url or "")) if job else ():
+        if "linkedin.com" in u:
+            return u
+    return ""
+
+
 def _profile_dict(db: Session, user_id: int) -> Dict[str, Any]:
     """The user's real profile. The name is never guessed from the email address."""
     user_record = db.query(User).filter(User.id == user_id).first()
@@ -415,6 +423,7 @@ def find_recipient(app_id: int, force: bool = False, user_id: int = Depends(get_
         run.set_output({"found": len(contacts), "cached": found.get("cached"),
                         "domains": sorted({c["email"].split("@")[1] for c in contacts})})
         return {"contacts": contacts, "recipient": contacts[0]["email"] if contacts else "",
+                "checked": found.get("checked", []), "linkedin_url": _linkedin_url(job),
                 "message": "" if contacts else found.get("message", "")}
 
 

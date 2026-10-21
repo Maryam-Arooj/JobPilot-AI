@@ -132,6 +132,8 @@ function ApplicationStudioContent() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [findingRecipient, setFindingRecipient] = useState(false);
   const [recipientMessage, setRecipientMessage] = useState('');
+  const [recipientChecked, setRecipientChecked] = useState<string[]>([]);
+  const [recipientLinkedin, setRecipientLinkedin] = useState('');
   const [searchedFor, setSearchedFor] = useState<number | null>(null);
   const [draftRecipient, setDraftRecipient] = useState('');
   const [includeAttachment, setIncludeAttachment] = useState(true);
@@ -236,6 +238,8 @@ function ApplicationStudioContent() {
       setContacts(data.contacts || []);
       if (data.recipient) setDraftRecipient(prev => (prev.trim() ? prev : data.recipient));
       setRecipientMessage(data.message || '');
+      setRecipientChecked(data.checked || []);
+      setRecipientLinkedin(data.linkedin_url || '');
     } catch (err: any) {
       setRecipientMessage(err?.message || 'Could not search for a recipient right now.');
     } finally {
@@ -944,6 +948,12 @@ function ApplicationStudioContent() {
                 ) : (
                   <div className="text-[11px] text-muted space-y-1">
                     <p>{recipientMessage || 'Searching the company website for a contact email...'} You can also type the recruiter&apos;s address.</p>
+                    {recipientChecked.length > 0 && <p>Checked: {recipientChecked.join(' · ')}</p>}
+                    {recipientMessage && recipientLinkedin && (
+                      <a href={recipientLinkedin} target="_blank" rel="noreferrer" className="text-accent font-bold underline block">
+                        Open the LinkedIn job page (the recruiter is often named there)
+                      </a>
+                    )}
                     {recipientMessage && selectedApp?.job?.application_url && (
                       <a href={selectedApp.job.application_url} target="_blank" rel="noreferrer" className="text-accent font-bold underline">
                         Open the job&apos;s Apply page

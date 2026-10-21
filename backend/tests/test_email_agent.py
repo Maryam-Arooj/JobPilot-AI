@@ -216,6 +216,8 @@ def test_find_contacts_site_then_google_domain_only(monkeypatch):
     pages = {"https://acmeanalytics.com/contact": "Contact: info@acmeanalytics.com"}
 
     def fake_post(url, **kw):
+        if url.endswith("/search"):
+            return _resp(200, {"data": [{"url": "https://dir.pk/acme", "markdown": "Acme: random@gmail.com"}]})
         return _resp(200, {"data": {"markdown": pages.get(kw["json"]["url"], "")}})
     google = {"organic_results": [{"snippet": "Send CVs to jobs@acmeanalytics.com", "link": "https://x.pk/post"},
                                   {"snippet": "or someone.random@gmail.com", "link": "https://y"}]}
@@ -285,3 +287,33 @@ def test_exporter_includes_projects():
     import io, docx
     d = docx.Document(io.BytesIO(export_resume_docx(PROFILE)))
     assert any("Sales Pipeline" in p.text for p in d.paragraphs)
+
+
+def test_hunter_and_company_panel_website(monkeypatch):
+    monkeypatch.setenv("SERPAPI_KEY", "s")
+    monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
+    monkeypatch.setenv("HUNTER_API_KEY", "h")
+    p = cp.FirecrawlCompanyResearchProvider(api_key="")
+    panel = {"knowledge_graph": {"website": "https://www.cedargs.com/"}, "organic_results": []}
+    with mock.patch.object(cp.requests, "get", return_value=_resp(200, panel)):
+        site, how = p.find_official_website("Cedar Global Solutions")
+    assert site == "https://cedargs.com"
+    hunter = {"data": {"emails": [
+        {"value": "careers@cedargs.com", "department": "hr", "sources": [{"uri": "https://cedargs.com/jobs"}]},
+        {"value": "bad@cedargs.com", "verification": {"status": "invalid"}}]}}
+
+    def fake_get(url, **kw):
+        return _resp(200, hunter if "hunter.io" in url else {"organic_results": []})
+    with mock.patch.object(cp.requests, "get", side_effect=fake_get):
+        out = cp.find_contact_emails("Cedar Global Solutions", "https://cedargs.com")
+    assert [c["email"] for c in out["contacts"]] == ["careers@cedargs.com"]
+    assert out["contacts"][0]["source_url"] == "https://cedargs.com/jobs" and "Hunter.io" in out["checked"]
+
+
+def test_company_panel_website_with_different_domain(monkeypatch):
+    monkeypatch.setenv("SERPAPI_KEY", "s")
+    p = cp.FirecrawlCompanyResearchProvider(api_key="")
+    panel = {"knowledge_graph": {"website": "https://www.xyzcorp.io/"}, "organic_results": []}
+    with mock.patch.object(cp.requests, "get", return_value=_resp(200, panel)):
+        site, how = p.find_official_website("Northwind Traders")
+    assert site == "https://xyzcorp.io" and "panel" in how

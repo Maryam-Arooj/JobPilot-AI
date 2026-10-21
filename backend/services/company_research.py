@@ -100,7 +100,7 @@ def payload(db: Session, comp: Company, rec: Optional[CompanyResearch]) -> Dict[
 
 
 CONTACTS_PROVIDER = "contact_emails"
-CONTACTS_VERSION = 2
+CONTACTS_VERSION = 3
 
 
 def cached_contacts(db: Session, comp: Optional[Company]) -> Optional[list]:
@@ -138,6 +138,7 @@ def find_contacts(db: Session, comp: Company, job_url: Optional[str] = None, for
         db.add(rec)
         db.flush()
     db.add(CompanyResearchSource(research_id=rec.id, source_url=comp.official_website or "",
-                                 provider=CONTACTS_PROVIDER, raw_data={"contacts": out["contacts"], "v": CONTACTS_VERSION}))
+                                 provider=CONTACTS_PROVIDER, raw_data={"contacts": out["contacts"], "v": CONTACTS_VERSION,
+                                                                        "checked": out.get("checked", [])}))
     db.flush()
     return {**out, "cached": False}

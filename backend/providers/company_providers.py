@@ -91,6 +91,17 @@ class FirecrawlCompanyResearchProvider:
                 if _is_official_candidate(url) and _domain_matches_company(url, company):
                     tc["summary"] = f"found {_root(url)}"
                     return _root(url), "Google search"
+            # Google's company panel names the website itself, even when the domain differs from the name
+            if kg and _is_official_candidate(kg):
+                tc["summary"] = f"found {_root(kg)} (Google company panel)"
+                return _root(kg), "Google company panel"
+            # a top result whose title carries the full company name (e.g. "Cedar Global Solutions | Home" on cedargs.com)
+            full = re.sub(r"[^a-z0-9]", "", company.lower())
+            for r in (data.get("organic_results") or [])[:3]:
+                title = re.sub(r"[^a-z0-9]", "", (r.get("title") or "").lower())
+                if r.get("link") and _is_official_candidate(r["link"]) and len(full) >= 6 and full in title:
+                    tc["summary"] = f"found {_root(r['link'])} (result title matches)"
+                    return _root(r["link"]), "Google search (title match)"
             tc["summary"] = f"no official website among {len(candidates)} results"
         return None, "not found"
 
@@ -298,7 +309,50 @@ def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
             return ("google", q, hits, [])
         return run
 
+    hunter_key = os.getenv("HUNTER_API_KEY", "")
+
+    def hunter_job():
+        with tool_call("hunter:domain-search", domain) as tc:
+            resp = requests.get("https://api.hunter.io/v2/domain-search", timeout=15,
+                                params={"domain": domain, "limit": 10, "api_key": hunter_key})
+            if resp.status_code != 200:
+                raise RuntimeError(f"Hunter returned HTTP {resp.status_code}")
+            hits = []
+            for e in ((resp.json() or {}).get("data") or {}).get("emails") or []:
+                addr = (e.get("value") or "").lower()
+                if not addr or not _email_kind(addr) or (e.get("verification") or {}).get("status") == "invalid":
+                    continue
+                dept = " ".join(str(e.get(k) or "") for k in ("department", "position")).lower()
+                hiring = any(w in dept for w in ("hr", "human resources", "recruit", "talent", "hiring", "people"))
+                src = next((x.get("uri") for x in e.get("sources") or [] if x.get("uri")), "hunter.io")
+                hits.append((addr, src, "hiring" if hiring else None))
+            tc["summary"] = f"{len(hits)} published email(s)"
+        return ("hunter", domain, hits, [])
+
+    def web_search_job():
+        """Firecrawl search: pages anywhere on the web that mention the company's contact email."""
+        with tool_call("firecrawl:search", f"{company} contact email") as tc:
+            resp = requests.post("https://api.firecrawl.dev/v1/search", timeout=25,
+                                 headers={"Authorization": f"Bearer {fc_key}"},
+                                 json={"query": f'"{company}" contact email', "limit": 5,
+                                       "scrapeOptions": {"formats": ["markdown"], "onlyMainContent": False}})
+            hits = []
+            if resp.status_code == 200:
+                for r in (resp.json() or {}).get("data") or []:
+                    text = " ".join(str(r.get(k) or "") for k in ("markdown", "description", "title"))
+                    for e in extract_emails(text):
+                        ed = e.split("@")[1]
+                        if (domain and (ed == domain or ed.endswith("." + domain))) or \
+                           (not domain and _domain_matches_company("https://" + ed, company)):
+                            hits.append((e, r.get("url") or ""))
+            tc["summary"] = f"{len(hits)} matching email(s)"
+        return ("google", "web", hits, [])
+
     jobs = []
+    if domain and hunter_key:
+        jobs.append(hunter_job)
+    if fc_key:
+        jobs.append(web_search_job)
     if website and fc_key:
         for path in ("", "/contact", "/contact-us", "/careers", "/about"):
             url = website.rstrip("/") + path
@@ -325,6 +379,9 @@ def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
                     if domain and _domain(l) == domain and CONTACT_PATH.search(urlparse(l).path or "") \
                             and l.split("#")[0].rstrip("/") not in scraped:
                         more.append(l.split("#")[0].rstrip("/"))
+            elif kind == "hunter":
+                for e, link, k in items:
+                    found.append({"email": e, "kind": k or _email_kind(e), "source_url": link, "on_site": False})
             else:
                 for e, link in items:
                     found.append({"email": e, "kind": _email_kind(e), "source_url": link, "on_site": False})
@@ -336,6 +393,9 @@ def find_contact_emails(company: str, website: Optional[str]) -> Dict[str, Any]:
         scraped.update(extra)
         collect(_parallel([page_job(u) for u in extra]))
     contacts = rank_contacts(found)
-    return {"contacts": contacts,
+    checked = ([f"website {website}"] if website else ["no official website found"]) + \
+        (["company pages"] if website and fc_key else []) + (["Google"] if serp_key else []) + \
+        (["web search"] if fc_key else []) + (["Hunter.io"] if domain and hunter_key else [])
+    return {"contacts": contacts, "checked": checked,
             "message": "" if contacts else (f"{company} does not publish a contact email on its website or in Google results. "
                                             "Big companies usually take applications only through the job's Apply link.")}
