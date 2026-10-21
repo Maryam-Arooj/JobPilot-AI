@@ -37,7 +37,14 @@ def main():
     with create_engine(ENV["DATABASE_URL"]).connect() as c:
         user = c.execute(text("select id from users where email = :e"), {"e": EMAIL}).first()
         if not user:
-            sys.exit(f"{EMAIL} not found in the database.")
+            rows = c.execute(text(
+                "select u.email, (select count(*) from applications a where a.user_id = u.id) as apps, "
+                "(select count(*) from career_profiles p where p.user_id = u.id) as cv "
+                "from users u order by u.id")).all()
+            print(f"  {EMAIL} is not a JobPilot login. Login accounts in your database:")
+            for r in rows:
+                print(f"    {r[0]}   (applications: {r[1]}, CV profile: {'yes' if r[2] else 'no'})")
+            sys.exit("  Run again with the account that has your applications and CV.")
         job = c.execute(text("select j.id, j.title, j.company from jobs j order by j.id desc limit 1")).first()
     if not job:
         sys.exit("No saved jobs yet. Search jobs in the app first (Task 3).")
