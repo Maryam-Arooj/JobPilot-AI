@@ -105,6 +105,8 @@ Status legend: ⏳ not started · 🔄 in progress · ✅ done · ⚠️ blocked
 
 ## 7. Progress log (newest first)
 
+- **21 Oct 2026 — Closing check.** Offline: 154 passed, 2 live-only skipped; frontend `tsc` clean. Live end-to-end script `backend/scripts/e2e_check.py <login> [Pakistan|Remote] [cv.pdf] [draft:addr]` checks backend, DB, CV parse, saved profile, live jobs + providers, match scores, Pakistan locations, the Apply-with-AI pipeline step by step, company research, email (single greeting/sign-off), recipient, CV attachment, Gmail and the dashboard. CV preview restored to the original light control bar / plain page.
+
 - **21 Oct 2026 — Gmail draft 502 explained + recipient order + doubled greeting.** Owner's draft failed with a generic 502. `email_providers.explain_gmail_error` now shows Google's real reason with the fix (403 missing scope → reconnect and tick every box; 403 API disabled → enable Gmail API; 401 → reconnect; 400; 429). OAuth callback refuses a connection where the Gmail-drafts permission was unticked (`gmail_scope_missing`), and the Applications page shows OAuth errors. Recipient ranking: HR/careers first, compliance@/legal@/sales@… last (also re-ranks saved results). AI greeting/sign-off are stripped (the app adds its own). 154 passed, 2 skipped.
 
 - **21 Oct 2026 — Task 6.** README rewritten for the finished project (three agents, Apply with AI, live dashboard, recipient sources, setup, configuration); shows only "Maintained by Maryam Arooj"; LICENSE unchanged. New `docs/DEMO_SCRIPT.md`. Final test run below. Owner pushes from Windows.
